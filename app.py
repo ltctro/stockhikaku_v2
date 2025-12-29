@@ -5,7 +5,7 @@ if "authed" not in st.session_state:
 
 if not st.session_state.authed:
     pw = st.text_input("パスワードを入力してください", type="password")
-    if pw == st.secrets["nrsk"]:
+    if pw == st.secrets["password"]:
         st.session_state.authed = True
         st.experimental_rerun()
     else:
