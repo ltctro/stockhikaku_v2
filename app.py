@@ -159,39 +159,22 @@ def get_company_name(ticker: str) -> str:
 @st.cache_data
 def get_financial_metrics(ticker: str) -> dict:
     try:
-        # 日本株
+        # 🇯🇵 日本株
         if ticker.endswith(".T"):
             code = ticker.replace(".T","")
 
-            # 株探から PER / PBR / セクター
-            html = requests.get(f"https://kabutan.jp/stock/?code={code}", timeout=10).text
-            soup = BeautifulSoup(html, "html.parser")
+            j = requests.get(
+                f"https://irbank.net/{code}/metrics.json",
+                timeout=10
+            ).json()
 
-            def val(label):
-                th = soup.find("th", string=label)
-                if not th:
-                    return None
-                td = th.find_next_sibling("td")
-                if not td:
-                    return None
-                s = td.text.replace("倍","").replace("－","").replace(",","").strip()
-                try:
-                    return float(s)
-                except:
-                    return None
+            return {
+                "PER": j.get("PER"),
+                "PBR": j.get("PBR"),
+                "sector": yf.Ticker(ticker).info.get("sector","Unknown")
+            }
 
-            per = val("PER")
-            pbr = val("PBR")
-
-            # セクターだけYahoo
-            try:
-                sector = yf.Ticker(ticker).info.get("sector","Unknown")
-            except:
-                sector = "Unknown"
-
-            return {"PER": per, "PBR": pbr, "sector": sector}
-
-        # 米国株
+        # 🇺🇸 米国株
         info = yf.Ticker(ticker).info
         return {
             "PER": info.get("trailingPE"),
@@ -201,6 +184,7 @@ def get_financial_metrics(ticker: str) -> dict:
 
     except:
         return {"PER": None, "PBR": None, "sector": "Unknown"}
+
 
 def search_tickers(query: str) -> dict:
     query_lower = query.lower().strip()
