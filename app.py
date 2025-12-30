@@ -1,17 +1,17 @@
 import streamlit as st
 
+import streamlit as st
+
 if "authed" not in st.session_state:
     st.session_state.authed = False
 
 if not st.session_state.authed:
     pw = st.text_input("パスワードを入力してください", type="password")
-    if pw:
-        if "pass" in st.secrets and pw == st.secrets["pass"]:
-            st.session_state.authed = True
-            st.experimental_rerun()
-        else:
-            st.warning("パスワードが間違っています")
-            st.stop()
+    if pw == st.secrets["nrsk"]:
+        st.session_state.authed = True
+        st.experimental_rerun()
+    else:
+        st.stop()
 
 import yfinance as yf
 import pandas as pd
