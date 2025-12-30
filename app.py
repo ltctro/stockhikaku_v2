@@ -1,16 +1,17 @@
 import streamlit as st
 
-if "authed" not in st.session_state:
-    st.session_state.authed = False
+# 🔐 simple password lock
+if "auth" not in st.session_state:
+    st.session_state.auth = False
 
-if not st.session_state.authed:
-    pw = st.text_input("パスワードを入力してください", type="password")
-    if pw == st.secrets["nrsk"]:
-        st.session_state.authed = True
-        st.experimental_rerun()
+if not st.session_state.auth:
+    st.title("🔒 Private Access")
+    pwd = st.text_input("Password", type="password")
+    if pwd == "nrsk":
+        st.session_state.auth = True
+        st.rerun()
     else:
         st.stop()
-
 
 import yfinance as yf
 import pandas as pd
@@ -20,7 +21,6 @@ import sqlite3
 import json
 import os
 from datetime import datetime, timedelta
-
 
 st.set_page_config(page_title="株価比較 ＋ 投資家心理指標", layout="wide")
 
@@ -263,13 +263,7 @@ def get_financial_metrics(ticker: str) -> dict:
     """PERとPBRを取得（キャッシュ対応）"""
     try:
         info = yf.Ticker(ticker).info
-        price = info.get("currentPrice")
-        eps = info.get("trailingEps")
-        if price and eps and eps != 0:
-            per = round(price / eps, 2)
-        else:
-            per = None
-        #per = info.get('trailingPE') or info.get('forwardPE')
+        per = info.get('trailingPE') or info.get('forwardPE')
         pbr = info.get('priceToBook')
         sector = info.get('sector', 'Unknown')
         return {
