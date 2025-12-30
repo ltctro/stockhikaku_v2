@@ -11,6 +11,7 @@ if not st.session_state.authed:
     else:
         st.stop()
 
+
 import yfinance as yf
 import pandas as pd
 import requests
@@ -19,7 +20,6 @@ import sqlite3
 import json
 import os
 from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
 
 
 st.set_page_config(page_title="株価比較 ＋ 投資家心理指標", layout="wide")
@@ -86,216 +86,662 @@ def fetch_all_stocks():
     return default_stocks
 
 def load_stocks_from_cache():
+    """JSONキャッシュから銘柄データを読み込む（なければ作成）"""
     if os.path.exists(STOCKS_CACHE_FILE):
         try:
             with open(STOCKS_CACHE_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except:
+        except Exception:
             pass
+    
+    # JSONキャッシュがなければ、fetch_all_stocks()で取得して保存
     stocks = fetch_all_stocks()
-    with open(STOCKS_CACHE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(stocks, f, ensure_ascii=False, indent=2)
+    try:
+        with open(STOCKS_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(stocks, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
     return stocks
 
 def init_db():
+    """DB とテーブルを作る（なければ）"""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("CREATE TABLE IF NOT EXISTS price_cache (ticker TEXT, date TEXT, close REAL, volume REAL, PRIMARY KEY (ticker, date))")
-    cur.execute("CREATE TABLE IF NOT EXISTS fear_greed (date TEXT PRIMARY KEY, value INTEGER)")
-    cur.execute("CREATE TABLE IF NOT EXISTS ticker_cache (ticker TEXT PRIMARY KEY, name TEXT, cached_at TEXT)")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS price_cache (
+            ticker TEXT,
+            date TEXT,
+            close REAL,
+            volume REAL,
+            PRIMARY KEY (ticker, date)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS fear_greed (
+            date TEXT PRIMARY KEY,
+            value INTEGER
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ticker_cache (
+            ticker TEXT PRIMARY KEY,
+            name TEXT,
+            cached_at TEXT
+        )
+    """)
     
-    cur.execute("SELECT COUNT(*) FROM ticker_cache")
-    if cur.fetchone()[0] == 0:
-        stocks = load_stocks_from_cache()
-        ts = datetime.today().isoformat()
-        cur.executemany("INSERT OR REPLACE INTO ticker_cache VALUES (?, ?, ?)", [(k, v, ts) for k, v in stocks.items()])
-        conn.commit()
+    # JSONキャッシュから銘柄データを投入
+    try:
+        cur.execute("SELECT COUNT(*) FROM ticker_cache")
+        count = cur.fetchone()[0]
+        if count == 0:  # 初回のみ
+            timestamp = datetime.today().isoformat()
+            all_stocks = load_stocks_from_cache()
+            for ticker, name in all_stocks.items():
+                cur.execute("""
+                    INSERT OR REPLACE INTO ticker_cache (ticker, name, cached_at)
+                    VALUES (?, ?, ?)
+                """, (ticker, name, timestamp))
+            conn.commit()
+    except Exception:
+        pass
+    
     conn.close()
 
 def save_prices(ticker: str, df: pd.DataFrame):
-    if df is None or df.empty: return
+    """price_cache に INSERT OR REPLACE で保存"""
+    if df is None or df.empty:
+        return
     conn = sqlite3.connect(DB_PATH)
-    rows = [(ticker, idx.strftime("%Y-%m-%d"), float(row['Close']), float(row['Volume'])) for idx, row in df.iterrows()]
-    conn.executemany("INSERT OR REPLACE INTO price_cache VALUES (?, ?, ?, ?)", rows)
-    conn.commit()
+    cur = conn.cursor()
+    rows = []
+    for idx, row in df[['Close', 'Volume']].iterrows():
+        date = idx.strftime("%Y-%m-%d")
+        close = None if pd.isna(row['Close']) else float(row['Close'])
+        vol = None if pd.isna(row['Volume']) else float(row['Volume'])
+        rows.append((ticker, date, close, vol))
+    if rows:
+        cur.executemany("""
+            INSERT OR REPLACE INTO price_cache (ticker, date, close, volume)
+            VALUES (?, ?, ?, ?)
+        """, rows)
+        conn.commit()
     conn.close()
 
 def load_prices_from_db(ticker: str, start_date: str) -> pd.DataFrame:
+    """DB から指定 start_date 以降のデータを取得"""
     conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT date, close as Close, volume as Volume FROM price_cache WHERE ticker = ? AND date >= ? ORDER BY date", conn, params=(ticker, start_date))
+    df = pd.read_sql_query("""
+        SELECT date, close, volume
+        FROM price_cache
+        WHERE ticker = ? AND date >= ?
+        ORDER BY date
+    """, conn, params=(ticker, start_date))
     conn.close()
-    if df.empty: return pd.DataFrame()
+    if df.empty:
+        return pd.DataFrame()
     df['date'] = pd.to_datetime(df['date'])
-    return df.set_index('date')
+    df = df.set_index('date')
+    df.rename(columns={'close': 'Close', 'volume': 'Volume'}, inplace=True)
+    return df
 
 def update_price_if_needed(ticker: str, period: str = "1y") -> pd.DataFrame:
+    """yfinance取得＋DB更新"""
     init_db()
     today = datetime.today().date()
-    mapping = {"1y": 365, "3y": 1095, "5y": 1825, "10y": 3650, "max": 10000}
-    days = mapping.get(period, 365)
-    start_date = (today - timedelta(days=days)).strftime("%Y-%m-%d")
-    
+    if period == "max":
+        start_date = "1900-01-01"
+    else:
+        mapping = {"1y": 365, "3y": 365*3, "5y": 365*5, "10y": 365*10, "3mo":90, "6mo":180, "2y":365*2}
+        days = mapping.get(period, 365)
+        start_date = (today - timedelta(days=days)).strftime("%Y-%m-%d")
     local = load_prices_from_db(ticker, start_date)
-    if local.empty or local.index.max().date() < today:
+    need_fetch = local.empty or local.index.max().date() < today
+    if need_fetch:
         try:
             df_new = yf.Ticker(ticker).history(period=period)
-            if df_new is not None and not df_new.empty:
-                df_new.index = pd.to_datetime(df_new.index).tz_localize(None)
-                save_prices(ticker, df_new)
-                return load_prices_from_db(ticker, start_date)
-        except:
-            pass
-    return local
+            if df_new is None or df_new.empty:
+                return local
+            df_new.index = pd.to_datetime(df_new.index).tz_localize(None)
+            save_prices(ticker, df_new)
+            combined = load_prices_from_db(ticker, start_date)
+            if combined.empty:
+                df_new = df_new[['Close', 'Volume']].copy()
+                return df_new
+            return combined
+        except Exception:
+            return local
+    else:
+        return local
+
+def load_price_cached(ticker: str, period: str = "1y") -> pd.DataFrame:
+    return update_price_if_needed(ticker, period)
 
 @st.cache_data
 def get_company_name(ticker: str) -> str:
+    """会社名を取得（キャッシュ対応）"""
     try:
         info = yf.Ticker(ticker).info
-        return info.get('longName') or info.get('shortName') or ticker
-    except:
+        name = info.get('longName') or info.get('shortName') or ticker
+        return name
+    except Exception:
         return ticker
+
+# セクター・業界別ETFマッピング
+SECTOR_ETF_MAP = {
+    'Technology': 'XLK',
+    'Healthcare': 'XLV',
+    'Financials': 'XLF',
+    'Industrials': 'XLI',
+    'Energy': 'XLE',
+    'Consumer Cyclical': 'XLY',
+    'Consumer Defensive': 'XLP',
+    'Real Estate': 'XLRE',
+    'Utilities': 'XLU',
+    'Basic Materials': 'XLB',
+    'Unknown': None
+}
+
+@st.cache_data
+def get_sector_avg_per() -> dict:
+    """セクターETFのPERから業界別平均PERを取得（キャッシュ対応）"""
+    sector_avg = {}
+    for sector, etf in SECTOR_ETF_MAP.items():
+        if etf is None:
+            continue
+        try:
+            info = yf.Ticker(etf).info
+            per = info.get('trailingPE') or info.get('forwardPE')
+            if per is not None:
+                sector_avg[sector] = per
+        except Exception:
+            pass
+    return sector_avg
 
 @st.cache_data
 def get_financial_metrics(ticker: str) -> dict:
+    """PERとPBRを取得（キャッシュ対応）"""
     try:
-        # 🇯🇵 日本株
-        if ticker.endswith(".T"):
-            code = ticker.replace(".T","")
-
-            j = requests.get(
-                f"https://irbank.net/{code}/metrics.json",
-                timeout=10
-            ).json()
-
-            return {
-                "PER": j.get("PER"),
-                "PBR": j.get("PBR"),
-                "sector": yf.Ticker(ticker).info.get("sector","Unknown")
-            }
-
-        # 🇺🇸 米国株
         info = yf.Ticker(ticker).info
+        price = info.get("currentPrice")
+        eps = info.get("trailingEps")
+        if price and eps and eps != 0:
+            per = round(price / eps, 2)
+        else:
+            per = None
+        #per = info.get('trailingPE') or info.get('forwardPE')
+        pbr = info.get('priceToBook')
+        sector = info.get('sector', 'Unknown')
         return {
-            "PER": info.get("trailingPE"),
-            "PBR": info.get("priceToBook"),
-            "sector": info.get("sector","Unknown")
+            'PER': per,
+            'PBR': pbr,
+            'sector': sector
         }
-
-    except:
-        return {"PER": None, "PBR": None, "sector": "Unknown"}
-
+    except Exception:
+        return {'PER': None, 'PBR': None, 'sector': 'Unknown'}
 
 def search_tickers(query: str) -> dict:
+    """会社名またはティッカーから検索（複数キーワード対応）"""
     query_lower = query.lower().strip()
-    if not query_lower: return {}
+    if not query_lower:
+        return {}
+    
     results = {}
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT ticker, name FROM ticker_cache WHERE LOWER(ticker) LIKE ? OR LOWER(name) LIKE ? LIMIT 15", 
-                           conn, params=(f"%{query_lower}%", f"%{query_lower}%"))
-    conn.close()
-    for _, row in df.iterrows():
-        results[row['ticker']] = row['name']
+    init_db()  # DB初期化（データがなければ投入）
+    
+    # ローカルデータベースから検索
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        # ティッカー完全一致（優先度高）
+        df_exact = pd.read_sql_query("""
+            SELECT ticker, name FROM ticker_cache 
+            WHERE LOWER(ticker) = ?
+        """, conn, params=(query_lower,))
+        
+        for _, row in df_exact.iterrows():
+            results[row['ticker']] = row['name']
+        
+        # 部分一致（ティッカーと名前）
+        df_partial = pd.read_sql_query("""
+            SELECT ticker, name FROM ticker_cache 
+            WHERE LOWER(ticker) LIKE ? OR LOWER(name) LIKE ?
+            LIMIT 15
+        """, conn, params=(f"%{query_lower}%", f"%{query_lower}%"))
+        conn.close()
+        
+        for _, row in df_partial.iterrows():
+            if row['ticker'] not in results:  # 重複除去
+                results[row['ticker']] = row['name']
+    except Exception:
+        pass
+    
+    # キャッシュに見つからない場合、yfinanceで直接検索（ティッカーのみ）
+    if not results and (len(query_lower) <= 6 and query_lower.isalnum()):
+        try:
+            # 日本株の場合は .T サフィックスを試す
+            test_tickers = [query_lower]
+            if query_lower.isdigit():
+                test_tickers.append(f"{query_lower}.T")
+            
+            for test_ticker in test_tickers:
+                try:
+                    info = yf.Ticker(test_ticker).info
+                    if info and info.get('regularMarketPrice'):  # 有効なティッカー
+                        name = info.get('longName') or info.get('shortName') or test_ticker
+                        results[test_ticker] = name
+                        break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    
     return results
 
+def add_ticker_to_cache(ticker: str, name: str):
+    """ティッカーをJSONキャッシュに追加"""
+    try:
+        stocks = load_stocks_from_cache()
+        if ticker not in stocks:
+            stocks[ticker] = name
+            with open(STOCKS_CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(stocks, f, ensure_ascii=False, indent=2)
+            
+            # SQLiteにも追加
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            timestamp = datetime.today().isoformat()
+            cur.execute("""
+                INSERT OR REPLACE INTO ticker_cache (ticker, name, cached_at)
+                VALUES (?, ?, ?)
+            """, (ticker, name, timestamp))
+            conn.commit()
+            conn.close()
+            return True
+    except Exception as e:
+        return False
+    return False
+
 def load_fear_greed_cached() -> pd.DataFrame:
+    """Fear & Greed Index 取得（キャッシュ対応）"""
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    df_local = pd.read_sql_query("SELECT date, value FROM fear_greed ORDER BY date", conn)
+    conn.close()
+    if not df_local.empty:
+        df_local['date'] = pd.to_datetime(df_local['date'])
+        df_local = df_local.set_index('date')
+        df_local.rename(columns={'value': 'Value'}, inplace=True)
+        if df_local.index.max().date() >= (datetime.today().date() - timedelta(days=2)):
+            return df_local
     try:
         url = "https://api.alternative.me/fng/?limit=0&format=json"
-        res = requests.get(url, timeout=10).json()
-        df = pd.DataFrame(res.get("data", []))
-        df["date"] = pd.to_datetime(df["timestamp"].astype(int), unit="s")
-        df["Value"] = df["value"].astype(int)
-        return df.set_index('date')[['Value']].sort_index()
-    except:
-        return pd.DataFrame()
+        res = requests.get(url, timeout=10)
+        res.raise_for_status()
+        data = res.json()
+        df = pd.DataFrame(data.get("data", []))
+        if df.empty:
+            return df_local if not df_local.empty else pd.DataFrame()
+        df["timestamp"] = pd.to_datetime(df["timestamp"].astype(int), unit="s")
+        df["value"] = df["value"].astype(int)
+        df_new = df[["timestamp", "value"]].rename(columns={"timestamp": "date"})
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM fear_greed")
+        rows = [(r['date'].strftime("%Y-%m-%d"), int(r['value'])) for _, r in df_new.iterrows()]
+        if rows:
+            cur.executemany("INSERT OR REPLACE INTO fear_greed (date, value) VALUES (?, ?)", rows)
+        conn.commit()
+        conn.close()
+        df_new = df_new.set_index('date').sort_index()
+        df_new.rename(columns={'value': 'Value'}, inplace=True)
+        return df_new
+    except Exception as e:
+        st.warning(f"Fear & Greed Index取得失敗: {e}")
+        return df_local if not df_local.empty else pd.DataFrame()
 
 # ============================
 # UI部分
 # ============================
 st.title("📈 株価比較 ＋ 投資家心理指標")
 
+# ==== 銘柄入力（会社名検索対応） ====
+st.subheader("銘柄を検索")
+
 if "selected_tickers" not in st.session_state:
     st.session_state.selected_tickers = []
+if "search_results" not in st.session_state:
+    st.session_state.search_results = {}
 
-search_query = st.text_input("銘柄検索 (例: トヨタ, 5020, Apple)")
-if search_query:
-    results = search_tickers(search_query)
-    for symbol, name in results.items():
-        if st.button(f"追加: {symbol} - {name}", key=f"add_{symbol}"):
-            ticker = f"{symbol}.T" if symbol.isdigit() else symbol
-            if ticker not in st.session_state.selected_tickers:
-                st.session_state.selected_tickers.append(ticker)
-            st.rerun()
+search_query = st.text_input(
+    "会社名またはティッカーシンボルで検索 (例: トヨタ, Apple, 7203)",
+    placeholder="会社名またはティッカーを入力"
+)
 
+if search_query and len(search_query) > 0:
+    with st.spinner("検索中..."):
+        st.session_state.search_results = search_tickers(search_query)
+    
+    if st.session_state.search_results:
+        st.write("**検索結果：**")
+        for symbol, name in list(st.session_state.search_results.items())[:5]:
+            col1, col2, col3 = st.columns([2.5, 1, 1])
+            with col1:
+                st.write(f"**{symbol}** - {name}")
+            with col2:
+                if st.button("追加", key=f"btn_{symbol}"):
+                    # 日本株（数字のみ）の場合は .T サフィックスを追加
+                    ticker_to_add = f"{symbol}.T" if symbol.isdigit() else symbol
+                    if ticker_to_add not in st.session_state.selected_tickers:
+                        st.session_state.selected_tickers.append(ticker_to_add)
+                    st.rerun()
+            with col3:
+                if st.button("辞書に追加", key=f"cache_{symbol}"):
+                    if add_ticker_to_cache(symbol, name):
+                        st.success(f"✓ {symbol} を辞書に追加しました")
+                    else:
+                        st.info(f"{symbol} は既に辞書に登録されています")
+
+# 選択された銘柄を表示
 if st.session_state.selected_tickers:
-    st.write("**選択中:** " + ", ".join(st.session_state.selected_tickers))
-    if st.button("選択をクリア"):
-        st.session_state.selected_tickers = []
-        st.rerun()
+    st.write("**選択中の銘柄：**")
+    cols = st.columns(len(st.session_state.selected_tickers) + 1)
+    for i, ticker in enumerate(st.session_state.selected_tickers):
+        with cols[i]:
+            col_name, col_remove = st.columns([4, 1])
+            company_name = get_company_name(ticker)
+            with col_name:
+                st.write(f"• {company_name} ({ticker})")
+            with col_remove:
+                if st.button("削除", key=f"remove_{ticker}"):
+                    st.session_state.selected_tickers.remove(ticker)
+                    st.rerun()
 
-# 期間設定
+tickers = st.session_state.selected_tickers
+codes = [t.replace(".T", "") if t.endswith(".T") else t for t in tickers]
+
+# ==== 期間と日付指定 ====
 col1, col2, col3 = st.columns(3)
 with col1:
-    period = st.selectbox("期間", ["1y", "3y", "5y", "10y", "max"], index=0)
+    period = st.selectbox("📅 取得期間", ["1y", "3y", "5y", "10y", "max"], index=2)
 with col2:
-    base_date = st.date_input("基準日", value=datetime.today() - timedelta(days=365))
+    default_date = datetime.today().replace(year=datetime.today().year - 1)
+    base_date = st.date_input("基準日を選択", value=default_date)
+    base_ts = pd.to_datetime(base_date)
 with col3:
-    end_date = st.date_input("終了日", value=datetime.today())
+    end_date = st.date_input("終了日を選択", value=datetime.today())
+    end_ts = pd.to_datetime(end_date)
 
-sentiment_catalog = {"VIX指数": "^VIX", "Fear & Greed Index": "FNG", "米10年債利回り": "^TNX"}
-selected_sentiments = st.multiselect("心理指標", list(sentiment_catalog.keys()), default=["VIX指数"])
+if end_ts < base_ts:
+    st.error("❌ 終了日は基準日以降を指定してください。")
+    st.stop()
 
-# データ集計
+# ==== 投資家心理指標選択 ====
+sentiment_catalog = {
+    "VIX指数": "^VIX",
+    "VIX3M": "^VIX3M",
+    "VVIX（VIXのボラ）": "^VVIX",
+    "ドル指数 DXY": "DX-Y.NYB",
+    "Fear & Greed Index": "FNG",
+    "信用スプレッド（HYG-TLT）": "CREDIT_SPREAD",
+    "ボラティリティ偏り（VIX/VVIX）": "VOL_BIAS",
+    "米10年債利回り": "^TNX"
+}
+
+sentiment_options = list(sentiment_catalog.keys())
+selected_sentiments = st.multiselect(
+    "💡 心理指標を選択してください（第二軸に表示）",
+    sentiment_options,
+    default=["VIX指数"]
+)
+
+# ==== データ取得 ====
 etf_data = {}
-for ticker in st.session_state.selected_tickers:
-    df = update_price_if_needed(ticker, period)
-    df = df[(df.index >= pd.to_datetime(base_date)) & (df.index <= pd.to_datetime(end_date))]
-    if not df.empty:
-        df["Relative"] = df["Close"] / df["Close"].iloc[0]
-        etf_data[ticker] = df
+company_names = {}  # code -> company name mapping
+for ticker, code in zip(tickers, codes):
+    df = load_price_cached(ticker, period)
+    if df.empty:
+        continue
+    df = df[(df.index >= base_ts) & (df.index <= end_ts)]
+    if df.empty:
+        continue
+    base_price = df["Close"].iloc[0]
+    df_rel = df.copy()
+    df_rel["Relative Price"] = df_rel["Close"] / base_price
+    etf_data[code] = df_rel
+    company_names[code] = get_company_name(ticker)
 
-# 心理指標
+# 心理指標データ取得
 sentiment_data = {}
 for name in selected_sentiments:
     code = sentiment_catalog[name]
+    
     if code == "FNG":
         df = load_fear_greed_cached()
+    elif code == "CREDIT_SPREAD":
+        df_hyg = load_price_cached("HYG", period)
+        df_tlt = load_price_cached("TLT", period)
+        if not df_hyg.empty and not df_tlt.empty:
+            df = pd.DataFrame(index=df_hyg.index)
+            df["Value"] = df_hyg["Close"] / df_tlt["Close"]
+        else:
+            continue
+    elif code == "VOL_BIAS":
+        vix = load_price_cached("^VIX", period)
+        vvix = load_price_cached("^VVIX", period)
+        if not vix.empty and not vvix.empty:
+            df = pd.DataFrame(index=vix.index)
+            df["Value"] = vix["Close"] / vvix["Close"]
+        else:
+            continue
     else:
-        df = update_price_if_needed(code, period)
-        if not df.empty: df["Value"] = df["Close"]
+        df = load_price_cached(code, period)
+        if df.empty:
+            continue
+        df["Value"] = df["Close"]
     
-    if not df.empty:
-        sentiment_data[name] = df[(df.index >= pd.to_datetime(base_date)) & (df.index <= pd.to_datetime(end_date))]
+    df = df[(df.index >= base_ts) & (df.index <= end_ts)]
+    if df.empty:
+        continue
+    
+    sentiment_data[name] = df
 
-# グラフ
-if etf_data or sentiment_data:
+# ==== グラフ生成 ====
+if not etf_data and not sentiment_data:
+    st.error("❌ データが見つかりませんでした。別の銘柄でお試しください。")
+else:
     fig = go.Figure()
-    for t, df in etf_data.items():
-        fig.add_trace(go.Scatter(x=df.index, y=df["Relative"], name=t, yaxis="y1"))
     
-    for n, df in sentiment_data.items():
-        fig.add_trace(go.Scatter(x=df.index, y=df["Value"], name=n, yaxis="y2", line=dict(dash='dot')))
-
+    # 第一軸：株価（相対価格）
+    for code, df in etf_data.items():
+        display_name = company_names.get(code, code)
+        fig.add_trace(go.Scatter(
+            x=df.index,
+            y=df["Relative Price"],
+            mode="lines",
+            name=display_name,
+            yaxis="y",
+            hovertemplate="%{x|%Y-%m-%d}<br>" + display_name + ": %{y:.2f}x<extra></extra>"
+        ))
+    
+    # 第二軸：心理指標
+    sentiment_colors = {
+        "VIX指数": "#FF6B6B",
+        "VIX3M": "#FF8C42",
+        "VVIX（VIXのボラ）": "#FFA500",
+        "ドル指数 DXY": "#4ECDC4",
+        "Fear & Greed Index": "#95E1D3",
+        "信用スプレッド（HYG-TLT）": "#A8D8EA",
+        "ボラティリティ偏り（VIX/VVIX）": "#AA96DA",
+        "米10年債利回り": "#A0DE82"
+    }
+    
+    for name in selected_sentiments:
+        if name not in sentiment_data:
+            continue
+        df = sentiment_data[name]
+        color = sentiment_colors.get(name, "#999999")
+        
+        fig.add_trace(go.Scatter(
+            x=df.index,
+            y=df["Value"],
+            mode="lines",
+            line=dict(dash="dash", color=color, width=2),
+            name=name,
+            yaxis="y2",
+            hovertemplate="%{x|%Y-%m-%d}<br>" + name + ": %{y:.2f}<extra></extra>"
+        ))
+    
+    # Fear & Greed 背景ゾーン
+    if "Fear & Greed Index" in selected_sentiments and "Fear & Greed Index" in sentiment_data:
+        fig.add_hrect(y0=0, y1=25, fillcolor="blue", opacity=0.1,
+                      layer="below", line_width=0, yref="y2",
+                      annotation_text="恐怖", annotation_position="top left")
+        fig.add_hrect(y0=75, y1=100, fillcolor="red", opacity=0.1,
+                      layer="below", line_width=0, yref="y2",
+                      annotation_text="強欲", annotation_position="top right")
+    
+    # VIX 指数のリスク帯域
+    if "VIX指数" in selected_sentiments:
+        fig.add_hrect(y0=0, y1=15, fillcolor="green", opacity=0.08,
+                      layer="below", line_width=0, yref="y2")
+        fig.add_hrect(y0=25, y1=80, fillcolor="red", opacity=0.08,
+                      layer="below", line_width=0, yref="y2")
+    
+    # ==== レイアウト設定 ====
     fig.update_layout(
-        yaxis=dict(title="相対株価"),
-        yaxis2=dict(title="心理指標", overlaying="y", side="right"),
-        hovermode="x unified"
+        title=f"📊 株価相対比較 ({base_date:%Y-%m-%d} ~ {end_date:%Y-%m-%d}) ＋ 投資家心理指標",
+        title_font_size=16,
+        hovermode="x unified",
+        height=600,
+        yaxis=dict(
+            title="<b>株価比率（基準日=1.0）</b>",
+            title_font_size=11,
+            gridcolor="#E8E8E8"
+        ),
+        yaxis2=dict(
+            title="<b>心理指標値</b>",
+            title_font_size=11,
+            overlaying="y",
+            side="right"
+        ),
+        xaxis=dict(
+            title="<b>日付</b>",
+            title_font_size=11,
+            gridcolor="#E8E8E8"
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.2,
+            xanchor="center",
+            x=0.5,
+            bgcolor="rgba(255, 255, 255, 0.8)",
+            bordercolor="gray",
+            borderwidth=1
+        ),
+        plot_bgcolor="rgba(250, 250, 250, 0.5)",
+        paper_bgcolor="white",
+        margin=dict(l=40, r=40, t=80, b=150)
     )
-    st.plotly_chart(fig, use_container_width=True)
-
-# 指標テーブル
-if etf_data:
-    st.subheader("📊 財務指標まとめ")
-    metrics_list = []
-    for t in st.session_state.selected_tickers:
-        m = get_financial_metrics(t)
-        df = etf_data.get(t)
-        perf = f"{(df['Relative'].iloc[-1]-1)*100:+.2f}%" if df is not None else "N/A"
-        metrics_list.append({
-            "銘柄": t,
-            "セクター": m['sector'],
-            "PER": m['PER'],
-            "PBR": m['PBR'],
-            "期間騰落率": perf
-        })
-    st.table(metrics_list)
-
+    
+    config = {
+        'responsive': True,
+        'displayModeBar': True,
+        'displaylogo': False,
+        'modeBarButtonsToRemove': ['lasso2d']
+    }
+    st.plotly_chart(fig, use_container_width=True, config=config)
+    
+    # ==== データサマリー ====
+    st.markdown("---")
+    st.subheader("📈 銘柄パフォーマンス")
+    
+    # 業界別平均PERを取得
+    sector_avg_per = get_sector_avg_per()
+    
+    # テーブル用のデータを準備
+    table_data = []
+    
+    for ticker, code in zip(tickers, codes):
+        if code not in etf_data:
+            continue
+        df = etf_data[code]
+        performance = ((df["Relative Price"].iloc[-1] - 1) * 100)
+        base_price = df["Close"].iloc[0]
+        end_price = df["Close"].iloc[-1]
+        display_name = company_names.get(code, code)
+        
+        # PER, PBRを取得
+        metrics = get_financial_metrics(ticker)
+        per = metrics['PER']
+        pbr = metrics['PBR']
+        sector = metrics['sector']
+        
+        per_str = f"{per:.2f}" if per is not None else "N/A"
+        pbr_str = f"{pbr:.2f}" if pbr is not None else "N/A"
+        
+        # セクター業界平均を取得
+        sector_avg_per_val = sector_avg_per.get(sector, None)
+        sector_avg_str = f"{sector_avg_per_val:.2f}" if sector_avg_per_val is not None else "N/A"
+        
+        if code.isdigit():
+            table_data.append({
+                "銘柄": display_name,
+                "セクター": sector,
+                "始値": f"¥{base_price:,.0f}",
+                "終値": f"¥{end_price:,.0f}",
+                "変化率": f"{performance:+.2f}%",
+                "PER": per_str,
+                "業界平均PER": sector_avg_str,
+                "PBR": pbr_str
+            })
+        else:
+            table_data.append({
+                "銘柄": display_name,
+                "セクター": sector,
+                "始値": f"${base_price:,.2f}",
+                "終値": f"${end_price:,.2f}",
+                "変化率": f"{performance:+.2f}%",
+                "PER": per_str,
+                "業界平均PER": sector_avg_str,
+                "PBR": pbr_str
+            })
+    
+    if table_data:
+        df_table = pd.DataFrame(table_data)
+        st.dataframe(df_table, use_container_width=True, hide_index=True)
+    
+    # セクターETF情報を表示
+    st.markdown("---")
+    st.subheader("📊 セクター業界平均PER（ETFベース）")
+    st.caption("各セクターの業界平均PERは、以下のセクターETFのPERに基づいています")
+    
+    sector_etf_info = [
+        ("Technology", "XLK", "テクノロジー企業ETF（米国）"),
+        ("Healthcare", "XLV", "ヘルスケア企業ETF（米国）"),
+        ("Financials", "XLF", "金融企業ETF（米国）"),
+        ("Industrials", "XLI", "産業企業ETF（米国）"),
+        ("Energy", "XLE", "エネルギー企業ETF（米国）"),
+        ("Consumer Cyclical", "XLY", "消費財企業ETF（米国）"),
+        ("Consumer Defensive", "XLP", "生活必需品企業ETF（米国）"),
+        ("Real Estate", "XLRE", "不動産企業ETF（米国）"),
+        ("Utilities", "XLU", "公共事業企業ETF（米国）"),
+        ("Basic Materials", "XLB", "素材企業ETF（米国）"),
+    ]
+    
+    sector_info_cols = st.columns(5)
+    for i, (sector, etf, desc) in enumerate(sector_etf_info):
+        with sector_info_cols[i % 5]:
+            if sector in sector_avg_per and sector_avg_per[sector] is not None:
+                per_val = sector_avg_per[sector]
+                st.metric(sector, f"{per_val:.2f}", 
+                         help=f"{desc}\nETF: {etf}")
+            else:
+                st.metric(sector, "N/A", help=f"{desc}\nETF: {etf}")
+    
+    col1, col2 = st.columns(2)
+    with col2:
+        st.subheader("💡 心理指標 (最新値)")
+        for name, df in list(sentiment_data.items())[:10]:
+            latest = df["Value"].iloc[-1]
+            st.write(f"**{name}**: {latest:.2f}")
