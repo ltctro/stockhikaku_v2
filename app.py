@@ -245,6 +245,19 @@ SECTOR_ETF_MAP = {
     'Basic Materials': 'XLB',
     'Unknown': None
 }
+# 日本株 TOPIX-17 業種別ETF（業界トレンド用）
+TOPIX17_ETF_MAP = {
+    "Energy": "1618",            # エネルギー資源
+    "Materials": "1617",         # 素材・化学
+    "Industrials": "1610",       # 電気機器
+    "Consumer Cyclical": "1612", # 自動車・輸送機
+    "Consumer Defensive": "1613",# 食品
+    "Healthcare": "1638",        # 医薬品
+    "Financials": "1615",        # 銀行
+    "Real Estate": "1633",       # 不動産
+    "Utilities": "1627",         # 電力・ガス
+}
+
 
 @st.cache_data
 def get_sector_avg_per() -> dict:
@@ -594,6 +607,8 @@ for name in selected_sentiments:
         continue
     
     sentiment_data[name] = df
+
+show_topix17 = st.checkbox("📊 日本株の業界トレンド（TOPIX-17 ETF）を表示する", value=False)
 
 # ==== グラフ生成 ====
 if not etf_data and not sentiment_data:
