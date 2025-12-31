@@ -120,6 +120,63 @@ def init_db():
     except:
         pass
     conn.close()
+    
+def search_tickers(query: str) -> dict:
+    """会社名またはティッカーから検索（複数キーワード対応）"""
+    query_lower = query.lower().strip()
+    if not query_lower:
+        return {}
+    
+    results = {}
+    init_db()  # DB初期化（データがなければ投入）
+    
+    # ローカルデータベースから検索
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        # ティッカー完全一致（優先度高）
+        df_exact = pd.read_sql_query("""
+            SELECT ticker, name FROM ticker_cache 
+            WHERE LOWER(ticker) = ?
+        """, conn, params=(query_lower,))
+        
+        for _, row in df_exact.iterrows():
+            results[row['ticker']] = row['name']
+        
+        # 部分一致（ティッカーと名前）
+        df_partial = pd.read_sql_query("""
+            SELECT ticker, name FROM ticker_cache 
+            WHERE LOWER(ticker) LIKE ? OR LOWER(name) LIKE ?
+            LIMIT 15
+        """, conn, params=(f"%{query_lower}%", f"%{query_lower}%"))
+        conn.close()
+        
+        for _, row in df_partial.iterrows():
+            if row['ticker'] not in results:
+                results[row['ticker']] = row['name']
+    except Exception:
+        pass
+    
+    # キャッシュに見つからない場合、yfinanceで直接検索（ティッカーのみ）
+    if not results and (len(query_lower) <= 6 and query_lower.isalnum()):
+        try:
+            test_tickers = [query_lower]
+            if query_lower.isdigit():
+                test_tickers.append(f"{query_lower}.T")
+            
+            for test_ticker in test_tickers:
+                try:
+                    info = yf.Ticker(test_ticker).info
+                    if info and info.get('regularMarketPrice'):
+                        name = info.get('longName') or info.get('shortName') or test_ticker
+                        results[test_ticker] = name
+                        break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    
+    return results
+
 # ============================
 # UI部分
 # ============================
