@@ -651,7 +651,7 @@ else:
                 line=dict(dash="dot", width=1),
                 name=f"TOPIX17 {sector_name}",
                 yaxis="y",
-                hovertemplate="%{x|%Y-%m-%d}<br>" + f"{sector_name}: %{y:.2f}x<extra></extra>"
+                hovertemplate="%{x|%Y-%m-%d}<br>" + sector_name + ": %{y:.2f}x<extra></extra>"
             ))
 
     # 第二軸：心理指標
