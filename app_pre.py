@@ -626,8 +626,9 @@ else:
             mode="lines",
             name=display_name,
             yaxis="y",
-            hovertemplate="%{x|%Y-%m-%d}<br>" + display_name + ": %{y:.2f}x<extra></extra>"
+            hovertemplate="%{x|%Y-%m-%d}<br>" + sector_name + ": %{y:.2f}x<extra></extra>"
         ))
+        
 
     # ==== 日本株 TOPIX-17 業界トレンド（補助線） ====
     if show_topix17:
