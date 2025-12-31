@@ -260,19 +260,66 @@ def get_sector_avg_per() -> dict:
 
 @st.cache_data
 def get_financial_metrics(ticker: str) -> dict:
-    """PERとPBRを取得（キャッシュ対応）"""
+    """
+    高精度版 PER/PBR 取得関数
+    1. yfinance の EPS から PER を自前計算
+    2. EPS が壊れていたら FMP API から取得
+    3. forwardPE は絶対に使わない（誤値対策）
+    """
+    per = None
+    pbr = None
+    sector = "Unknown"
+
+    # --- ① yfinance で取得 ---
     try:
         info = yf.Ticker(ticker).info
-        per = info.get('trailingPE') or info.get('forwardPE')
-        pbr = info.get('priceToBook')
-        sector = info.get('sector', 'Unknown')
-        return {
-            'PER': per,
-            'PBR': pbr,
-            'sector': sector
-        }
+        price = info.get("regularMarketPrice")
+        eps = info.get("epsTrailingTwelveMonths")
+        pbr = info.get("priceToBook")
+        sector = info.get("sector", "Unknown")
+
+        # EPS が正常なら自前計算
+        if price and eps and eps > 0:
+            per = price / eps
+
     except Exception:
-        return {'PER': None, 'PBR': None, 'sector': 'Unknown'}
+        pass
+
+    # --- ② FMP API フォールバック ---
+    if per is None:
+        try:
+            FMP_KEY = "YOUR_API_KEY"  # ← APIキーを入れる
+            url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_KEY}"
+            r = requests.get(url, timeout=5).json()
+
+            if r:
+                data = r[0]
+                eps_fmp = data.get("eps")
+                price_fmp = data.get("price")
+                pbr_fmp = data.get("priceToBook")
+                sector_fmp = data.get("sector")
+
+                # EPS が正常なら PER を計算
+                if eps_fmp and eps_fmp > 0 and price_fmp:
+                    per = price_fmp / eps_fmp
+
+                # PBR が欠損していたら補完
+                if pbr is None:
+                    pbr = pbr_fmp
+
+                # セクター補完
+                if sector == "Unknown" and sector_fmp:
+                    sector = sector_fmp
+
+        except Exception:
+            pass
+
+    return {
+        "PER": per,
+        "PBR": pbr,
+        "sector": sector
+    }
+
 
 def search_tickers(query: str) -> dict:
     """会社名またはティッカーから検索（複数キーワード対応）"""
