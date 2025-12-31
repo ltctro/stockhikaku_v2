@@ -1,4 +1,5 @@
 import streamlit as st
+api_key = st.secrets["FMP_API_KEY"]
 
 # 🔐 simple password lock
 if "auth" not in st.session_state:
@@ -261,10 +262,8 @@ def get_sector_avg_per() -> dict:
 @st.cache_data
 def get_financial_metrics(ticker: str) -> dict:
     """
-    PER/PBR/セクターを高精度で取得する最終版
-    - EPS の信頼性チェックを強化
-    - yfinance EPS が壊れていたら FMP にフォールバック
-    - forwardPE は絶対に使わない
+    yfinance を基本にしつつ、EPS が壊れていたら FMP で補完する安全版。
+    forwardPE は絶対に使わない。
     """
     per = None
     pbr = None
@@ -278,58 +277,43 @@ def get_financial_metrics(ticker: str) -> dict:
         pbr = info.get("priceToBook")
         sector = info.get("sector", "Unknown")
 
-        eps_yf_valid = (
-            eps_yf is not None and
-            eps_yf > 0.1 and
-            price_yf and
-            eps_yf > price_yf / 20  # EPS が株価の1/20以下なら誤値扱い
-        )
-
-        if eps_yf_valid:
+        # EPS が正常なら PER を計算
+        if price_yf and eps_yf and eps_yf > 0:
             per = price_yf / eps_yf
 
     except Exception:
         pass
 
-    # --- ② FMP API フォールバック ---
-    try:
-        FMP_KEY = "YOUR_API_KEY"  # ← APIキーを入れる
-        url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_KEY}"
-        r = requests.get(url, timeout=5).json()
+    # --- ② FMP フォールバック（yfinance が壊れていた場合のみ） ---
+    if per is None:
+        try:
+            import os
+            api_key = os.getenv("FMP_API_KEY")  # ← APIキーは環境変数から取得
 
-        if r:
-            data = r[0]
-            eps_fmp = data.get("eps")
-            price_fmp = data.get("price")
-            pbr_fmp = data.get("priceToBook")
-            sector_fmp = data.get("sector")
+            # 日本株は .T を付ける
+            fmp_ticker = ticker if "." in ticker else f"{ticker}.T"
 
-            eps_fmp_valid = (
-                eps_fmp is not None and
-                eps_fmp > 0.1 and
-                price_fmp and
-                eps_fmp > price_fmp / 20
-            )
+            url = f"https://financialmodelingprep.com/api/v3/profile/{fmp_ticker}?apikey={api_key}"
+            r = requests.get(url, timeout=5).json()
 
-            # yfinance と FMP の EPS が大きくズレていたら FMP を採用
-            if eps_fmp_valid:
-                if eps_yf and eps_yf > 0:
-                    diff = abs(eps_yf - eps_fmp) / eps_fmp
-                    if diff > 0.3:  # 30%以上ズレていたら FMP を採用
-                        per = price_fmp / eps_fmp
-                else:
+            if r:
+                data = r[0]
+                eps_fmp = data.get("eps")
+                price_fmp = data.get("price")
+                pbr_fmp = data.get("priceToBook")
+                sector_fmp = data.get("sector")
+
+                if price_fmp and eps_fmp and eps_fmp > 0:
                     per = price_fmp / eps_fmp
 
-            # PBR 補完
-            if pbr is None and pbr_fmp:
-                pbr = pbr_fmp
+                if pbr is None and pbr_fmp:
+                    pbr = pbr_fmp
 
-            # セクター補完
-            if sector == "Unknown" and sector_fmp:
-                sector = sector_fmp
+                if sector == "Unknown" and sector_fmp:
+                    sector = sector_fmp
 
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     return {
         "PER": per,
