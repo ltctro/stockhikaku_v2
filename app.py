@@ -262,45 +262,73 @@ def get_sector_avg_per() -> dict:
             pass
     return sector_avg
 
-
 @st.cache_data
 def get_financial_metrics(ticker: str) -> dict:
     """
-    日本株の PER を安定して取得するために FMP quote API を使用する版。
-    EPS の自前計算は行わない。
+    yfinance を基本にしつつ、EPS が壊れていたら FMP で補完する安全版。
+    forwardPE は絶対に使わない。
+    公開アプリでも APIキーが漏れないよう secrets から取得する。
     """
     per = None
     pbr = None
     sector = "Unknown"
 
-    # --- yfinance（補助） ---
+    # --- ① yfinance で取得 ---
     try:
         info = yf.Ticker(ticker).info
+        price_yf = info.get("regularMarketPrice")
+        eps_yf = info.get("epsTrailingTwelveMonths")
         pbr = info.get("priceToBook")
         sector = info.get("sector", "Unknown")
-    except Exception:
-        pass
 
-    # --- FMP quote API で PER を直接取得 ---
-    try:
-        api_key = st.secrets["FMP_API_KEY"]
-        fmp_ticker = ticker if "." in ticker else f"{ticker}.T"
-
-        url = f"https://financialmodelingprep.com/api/v3/quote/{fmp_ticker}?apikey={api_key}"
-        r = requests.get(url, timeout=5).json()
-
-        if r:
-            data = r[0]
-            per = data.get("pe")  # PER を直接取得
+        # EPS が正常なら PER を計算
+        if price_yf and eps_yf and eps_yf > 0:
+            per = price_yf / eps_yf
 
     except Exception:
         pass
+
+    # --- ② FMP フォールバック（yfinance が壊れていた場合のみ） ---
+    if per is None:
+        try:
+            # secrets から APIキーを取得（公開アプリでも安全）
+            api_key = st.secrets["FMP_API_KEY"]
+
+            # 日本株は .T を付ける
+            fmp_ticker = ticker if "." in ticker else f"{ticker}.T"
+
+            url = f"https://financialmodelingprep.com/api/v3/profile/{fmp_ticker}?apikey={api_key}"
+            r = requests.get(url, timeout=5).json()
+
+            if r:
+                data = r[0]
+                eps_fmp = data.get("eps")
+                price_fmp = data.get("price")
+                pbr_fmp = data.get("priceToBook")
+                sector_fmp = data.get("sector")
+
+                # FMP の EPS が正常なら PER を計算
+                if price_fmp and eps_fmp and eps_fmp > 0:
+                    per = price_fmp / eps_fmp
+
+                # PBR 補完
+                if pbr is None and pbr_fmp:
+                    pbr = pbr_fmp
+
+                # セクター補完
+                if sector == "Unknown" and sector_fmp:
+                    sector = sector_fmp
+
+        except Exception:
+            pass
 
     return {
         "PER": per,
         "PBR": pbr,
         "sector": sector
     }
+
+
 
 
 
