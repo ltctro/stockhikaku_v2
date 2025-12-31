@@ -1,6 +1,9 @@
 import streamlit as st
 api_key = st.secrets["FMP_API_KEY"]
 
+# Secrets からパスワードを取得
+APP_PASSWORD = st.secrets["APP_PASSWORD"]
+
 # 🔐 simple password lock
 if "auth" not in st.session_state:
     st.session_state.auth = False
@@ -8,7 +11,7 @@ if "auth" not in st.session_state:
 if not st.session_state.auth:
     st.title("🔒 Private Access")
     pwd = st.text_input("Password", type="password")
-    if pwd == "nrsk":
+    if pwd == APP_PASSWORD:
         st.session_state.auth = True
         st.rerun()
     else:
