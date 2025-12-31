@@ -615,10 +615,7 @@ if not etf_data and not sentiment_data:
     st.error("❌ データが見つかりませんでした。別の銘柄でお試しください。")
 else:
     fig = go.Figure()
-
-    # ==== 日本株業界トレンド（TOPIX-17）表示設定 ====
-    show_topix17 = st.checkbox("📊 日本株の業界トレンド（TOPIX-17 ETF）を表示する", value=False)
-
+    
     # 第一軸：株価（相対価格）
     for code, df in etf_data.items():
         display_name = company_names.get(code, code)
@@ -630,44 +627,7 @@ else:
             yaxis="y",
             hovertemplate="%{x|%Y-%m-%d}<br>" + display_name + ": %{y:.2f}x<extra></extra>"
         ))
-
-    # ==== 日本株 TOPIX-17 業界トレンド（補助線） ====
-    if show_topix17:
-        TOPIX17_ETF_MAP = {
-            "Energy": "1618",
-            "Materials": "1617",
-            "Industrials": "1610",
-            "Consumer Cyclical": "1612",
-            "Consumer Defensive": "1613",
-            "Healthcare": "1638",
-            "Financials": "1615",
-            "Real Estate": "1633",
-            "Utilities": "1627",
-        }
-
-        for sector_name, etf_code in TOPIX17_ETF_MAP.items():
-            ticker = f"{etf_code}.T"
-            df_topix = load_price_cached(ticker, period)
-            if df_topix.empty:
-                continue
-
-            df_topix = df_topix[(df_topix.index >= base_ts) & (df_topix.index <= end_ts)]
-            if df_topix.empty:
-                continue
-
-            base_price_topix = df_topix["Close"].iloc[0]
-            df_topix["Relative Price"] = df_topix["Close"] / base_price_topix
-
-            fig.add_trace(go.Scatter(
-                x=df_topix.index,
-                y=df_topix["Relative Price"],
-                mode="lines",
-                line=dict(dash="dot", width=1),
-                name=f"TOPIX17 {sector_name}",
-                yaxis="y",
-                hovertemplate="%{x|%Y-%m-%d}<br>" + f"{sector_name}: %{y:.2f}x<extra></extra>"
-            ))
-
+    
     # 第二軸：心理指標
     sentiment_colors = {
         "VIX指数": "#FF6B6B",
@@ -679,13 +639,13 @@ else:
         "ボラティリティ偏り（VIX/VVIX）": "#AA96DA",
         "米10年債利回り": "#A0DE82"
     }
-
+    
     for name in selected_sentiments:
         if name not in sentiment_data:
             continue
         df = sentiment_data[name]
         color = sentiment_colors.get(name, "#999999")
-
+        
         fig.add_trace(go.Scatter(
             x=df.index,
             y=df["Value"],
@@ -695,7 +655,7 @@ else:
             yaxis="y2",
             hovertemplate="%{x|%Y-%m-%d}<br>" + name + ": %{y:.2f}<extra></extra>"
         ))
-
+    
     # Fear & Greed 背景ゾーン
     if "Fear & Greed Index" in selected_sentiments and "Fear & Greed Index" in sentiment_data:
         fig.add_hrect(y0=0, y1=25, fillcolor="blue", opacity=0.1,
@@ -704,14 +664,14 @@ else:
         fig.add_hrect(y0=75, y1=100, fillcolor="red", opacity=0.1,
                       layer="below", line_width=0, yref="y2",
                       annotation_text="強欲", annotation_position="top right")
-
+    
     # VIX 指数のリスク帯域
     if "VIX指数" in selected_sentiments:
         fig.add_hrect(y0=0, y1=15, fillcolor="green", opacity=0.08,
                       layer="below", line_width=0, yref="y2")
         fig.add_hrect(y0=25, y1=80, fillcolor="red", opacity=0.08,
                       layer="below", line_width=0, yref="y2")
-
+    
     # ==== レイアウト設定 ====
     fig.update_layout(
         title=f"📊 株価相対比較 ({base_date:%Y-%m-%d} ~ {end_date:%Y-%m-%d}) ＋ 投資家心理指標",
@@ -748,7 +708,7 @@ else:
         paper_bgcolor="white",
         margin=dict(l=40, r=40, t=80, b=150)
     )
-
+    
     config = {
         'responsive': True,
         'displayModeBar': True,
@@ -756,3 +716,97 @@ else:
         'modeBarButtonsToRemove': ['lasso2d']
     }
     st.plotly_chart(fig, use_container_width=True, config=config)
+    
+    # ==== データサマリー ====
+    st.markdown("---")
+    st.subheader("📈 銘柄パフォーマンス")
+    
+    # 業界別平均PERを取得
+    sector_avg_per = get_sector_avg_per()
+    
+    # テーブル用のデータを準備
+    table_data = []
+    
+    for ticker, code in zip(tickers, codes):
+        if code not in etf_data:
+            continue
+        df = etf_data[code]
+        performance = ((df["Relative Price"].iloc[-1] - 1) * 100)
+        base_price = df["Close"].iloc[0]
+        end_price = df["Close"].iloc[-1]
+        display_name = company_names.get(code, code)
+        
+        # PER, PBRを取得
+        metrics = get_financial_metrics(ticker)
+        per = metrics['PER']
+        pbr = metrics['PBR']
+        sector = metrics['sector']
+        
+        per_str = f"{per:.2f}" if per is not None else "N/A"
+        pbr_str = f"{pbr:.2f}" if pbr is not None else "N/A"
+        
+        # セクター業界平均を取得
+        sector_avg_per_val = sector_avg_per.get(sector, None)
+        sector_avg_str = f"{sector_avg_per_val:.2f}" if sector_avg_per_val is not None else "N/A"
+        
+        if code.isdigit():
+            table_data.append({
+                "銘柄": display_name,
+                "セクター": sector,
+                "始値": f"¥{base_price:,.0f}",
+                "終値": f"¥{end_price:,.0f}",
+                "変化率": f"{performance:+.2f}%",
+                "PER": per_str,
+                "業界平均PER": sector_avg_str,
+                "PBR": pbr_str
+            })
+        else:
+            table_data.append({
+                "銘柄": display_name,
+                "セクター": sector,
+                "始値": f"${base_price:,.2f}",
+                "終値": f"${end_price:,.2f}",
+                "変化率": f"{performance:+.2f}%",
+                "PER": per_str,
+                "業界平均PER": sector_avg_str,
+                "PBR": pbr_str
+            })
+    
+    if table_data:
+        df_table = pd.DataFrame(table_data)
+        st.dataframe(df_table, use_container_width=True, hide_index=True)
+    
+    # セクターETF情報を表示
+    st.markdown("---")
+    st.subheader("📊 セクター業界平均PER（ETFベース）")
+    st.caption("各セクターの業界平均PERは、以下のセクターETFのPERに基づいています")
+    
+    sector_etf_info = [
+        ("Technology", "XLK", "テクノロジー企業ETF（米国）"),
+        ("Healthcare", "XLV", "ヘルスケア企業ETF（米国）"),
+        ("Financials", "XLF", "金融企業ETF（米国）"),
+        ("Industrials", "XLI", "産業企業ETF（米国）"),
+        ("Energy", "XLE", "エネルギー企業ETF（米国）"),
+        ("Consumer Cyclical", "XLY", "消費財企業ETF（米国）"),
+        ("Consumer Defensive", "XLP", "生活必需品企業ETF（米国）"),
+        ("Real Estate", "XLRE", "不動産企業ETF（米国）"),
+        ("Utilities", "XLU", "公共事業企業ETF（米国）"),
+        ("Basic Materials", "XLB", "素材企業ETF（米国）"),
+    ]
+    
+    sector_info_cols = st.columns(5)
+    for i, (sector, etf, desc) in enumerate(sector_etf_info):
+        with sector_info_cols[i % 5]:
+            if sector in sector_avg_per and sector_avg_per[sector] is not None:
+                per_val = sector_avg_per[sector]
+                st.metric(sector, f"{per_val:.2f}", 
+                         help=f"{desc}\nETF: {etf}")
+            else:
+                st.metric(sector, "N/A", help=f"{desc}\nETF: {etf}")
+    
+    col1, col2 = st.columns(2)
+    with col2:
+        st.subheader("💡 心理指標 (最新値)")
+        for name, df in list(sentiment_data.items())[:10]:
+            latest = df["Value"].iloc[-1]
+            st.write(f"**{name}**: {latest:.2f}")
