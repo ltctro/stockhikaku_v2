@@ -267,6 +267,7 @@ def get_financial_metrics(ticker: str) -> dict:
     """
     yfinance を基本にしつつ、EPS が壊れていたら FMP で補完する安全版。
     forwardPE は絶対に使わない。
+    公開アプリでも APIキーが漏れないよう secrets から取得する。
     """
     per = None
     pbr = None
@@ -290,8 +291,8 @@ def get_financial_metrics(ticker: str) -> dict:
     # --- ② FMP フォールバック（yfinance が壊れていた場合のみ） ---
     if per is None:
         try:
-            import os
-            api_key = os.getenv("FMP_API_KEY")  # ← APIキーは環境変数から取得
+            # secrets から APIキーを取得（公開アプリでも安全）
+            api_key = st.secrets["FMP_API_KEY"]
 
             # 日本株は .T を付ける
             fmp_ticker = ticker if "." in ticker else f"{ticker}.T"
@@ -306,12 +307,15 @@ def get_financial_metrics(ticker: str) -> dict:
                 pbr_fmp = data.get("priceToBook")
                 sector_fmp = data.get("sector")
 
+                # FMP の EPS が正常なら PER を計算
                 if price_fmp and eps_fmp and eps_fmp > 0:
                     per = price_fmp / eps_fmp
 
+                # PBR 補完
                 if pbr is None and pbr_fmp:
                     pbr = pbr_fmp
 
+                # セクター補完
                 if sector == "Unknown" and sector_fmp:
                     sector = sector_fmp
 
@@ -323,6 +327,9 @@ def get_financial_metrics(ticker: str) -> dict:
         "PBR": pbr,
         "sector": sector
     }
+
+
+
 
 
 def search_tickers(query: str) -> dict:
