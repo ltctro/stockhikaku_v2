@@ -261,11 +261,10 @@ def get_sector_avg_per() -> dict:
 @st.cache_data
 def get_financial_metrics(ticker: str) -> dict:
     """
-    高精度 PER/PBR 取得関数（EPS 信頼性チェック + FMP フォールバック）
-    1. yfinance の EPS から PER を自前計算
-    2. EPS が小さすぎる・異常値なら破棄
-    3. FMP の EPS と比較し、30%以上ズレていたら FMP を採用
-    4. forwardPE は絶対に使わない
+    PER/PBR/セクターを高精度で取得する最終版
+    - EPS の信頼性チェックを強化
+    - yfinance EPS が壊れていたら FMP にフォールバック
+    - forwardPE は絶対に使わない
     """
     per = None
     pbr = None
@@ -279,15 +278,14 @@ def get_financial_metrics(ticker: str) -> dict:
         pbr = info.get("priceToBook")
         sector = info.get("sector", "Unknown")
 
-        # EPS 信頼性チェック
-        eps_valid = (
+        eps_yf_valid = (
             eps_yf is not None and
             eps_yf > 0.1 and
             price_yf and
-            eps_yf > price_yf * 0.001  # EPS が小さすぎる場合は誤値
+            eps_yf > price_yf / 20  # EPS が株価の1/20以下なら誤値扱い
         )
 
-        if eps_valid:
+        if eps_yf_valid:
             per = price_yf / eps_yf
 
     except Exception:
@@ -306,12 +304,11 @@ def get_financial_metrics(ticker: str) -> dict:
             pbr_fmp = data.get("priceToBook")
             sector_fmp = data.get("sector")
 
-            # FMP EPS が正常か？
             eps_fmp_valid = (
                 eps_fmp is not None and
                 eps_fmp > 0.1 and
                 price_fmp and
-                eps_fmp > price_fmp * 0.001
+                eps_fmp > price_fmp / 20
             )
 
             # yfinance と FMP の EPS が大きくズレていたら FMP を採用
