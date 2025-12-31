@@ -265,71 +265,70 @@ def get_sector_avg_per() -> dict:
 @st.cache_data
 def get_financial_metrics(ticker: str) -> dict:
     """
-    FMP の income-statement API を使って EPS を自前計算する最終版。
-    yfinance は補助的に使用し、forwardPE は絶対に使わない。
-    公開アプリでも安全に動作する。
+    yfinance を基本にしつつ、EPS が壊れていたら FMP で補完する安全版。
+    forwardPE は絶対に使わない。
+    公開アプリでも APIキーが漏れないよう secrets から取得する。
     """
     per = None
     pbr = None
     sector = "Unknown"
 
-    # --- ① yfinance（補助的） ---
+    # --- ① yfinance で取得 ---
     try:
         info = yf.Ticker(ticker).info
         price_yf = info.get("regularMarketPrice")
+        eps_yf = info.get("epsTrailingTwelveMonths")
         pbr = info.get("priceToBook")
         sector = info.get("sector", "Unknown")
-    except Exception:
-        price_yf = None
 
-    # --- ② FMP income-statement で EPS を自前計算 ---
-    try:
-        api_key = st.secrets["FMP_API_KEY"]
-
-        # 日本株は .T を付ける
-        fmp_ticker = ticker if "." in ticker else f"{ticker}.T"
-
-        # income-statement API（年度データ）
-        url = f"https://financialmodelingprep.com/api/v3/income-statement/{fmp_ticker}?limit=1&apikey={api_key}"
-        r = requests.get(url, timeout=5).json()
-
-        if r:
-            data = r[0]
-
-            net_income = data.get("netIncome")
-            shares = data.get("weightedAverageShsOut")
-
-            if net_income and shares and shares > 0:
-                eps = net_income / shares
-            else:
-                eps = None
-
-            # 株価は yfinance か FMP の profile から取得
-            price = price_yf
-
-            if price is None:
-                # FMP profile から株価取得
-                url_p = f"https://financialmodelingprep.com/api/v3/profile/{fmp_ticker}?apikey={api_key}"
-                rp = requests.get(url_p, timeout=5).json()
-                if rp:
-                    price = rp[0].get("price")
-                    if pbr is None:
-                        pbr = rp[0].get("priceToBook")
-                    if sector == "Unknown":
-                        sector = rp[0].get("sector")
-
-            # PER 計算
-            if price and eps and eps > 0:
-                per = price / eps
+        # EPS が正常なら PER を計算
+        if price_yf and eps_yf and eps_yf > 0:
+            per = price_yf / eps_yf
 
     except Exception:
         pass
+
+    # --- ② FMP フォールバック（yfinance が壊れていた場合のみ） ---
+    if per is None:
+        try:
+            # secrets から APIキーを取得（公開アプリでも安全）
+            api_key = st.secrets["FMP_API_KEY"]
+
+            # 日本株は .T を付ける
+            fmp_ticker = ticker if "." in ticker else f"{ticker}.T"
+
+            url = f"https://financialmodelingprep.com/api/v3/profile/{fmp_ticker}?apikey={api_key}"
+            r = requests.get(url, timeout=5).json()
+
+            if r:
+                data = r[0]
+                eps_fmp = data.get("eps")
+                price_fmp = data.get("price")
+                pbr_fmp = data.get("priceToBook")
+                sector_fmp = data.get("sector")
+
+                # FMP の EPS が正常なら PER を計算
+                if price_fmp and eps_fmp and eps_fmp > 0:
+                    per = price_fmp / eps_fmp
+
+                # PBR 補完
+                if pbr is None and pbr_fmp:
+                    pbr = pbr_fmp
+
+                # セクター補完
+                if sector == "Unknown" and sector_fmp:
+                    sector = sector_fmp
+
+        except Exception:
+            pass
 
     return {
         "PER": per,
         "PBR": pbr,
         "sector": sector
     }
+
+
 
 
 
