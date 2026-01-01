@@ -646,15 +646,15 @@ else:
             base_price_topix = df_topix["Close"].iloc[0]
             df_topix["Relative Price"] = df_topix["Close"] / base_price_topix
 
-						fig.add_trace(go.Scatter(
-						    x=df_topix.index,
-						    y=df_topix["Relative Price"],
-						    mode="lines",
-						    line=dict(dash="dot", width=1),
-						    name=f"TOPIX17 {sector_name}",
-						    yaxis="y",
-						    hovertemplate="%{x|%Y-%m-%d}<br>" + sector_name + ": %{y:.2f}x<extra></extra>"
-						))
+            fig.add_trace(go.Scatter(
+                x=df_topix.index,
+                y=df_topix["Relative Price"],
+                mode="lines",
+                line=dict(dash="dot", width=1),
+                name=f"TOPIX17 {sector_name}",
+                yaxis="y",
+                hovertemplate="%{x|%Y-%m-%d}<br>" + sector_name + ": %{y:.2f}x<extra></extra>"
+            ))
 
     # 第二軸:心理指標
     sentiment_colors = {
