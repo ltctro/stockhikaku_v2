@@ -1,5 +1,6 @@
 import streamlit as st
-st.set_page_config(page_title="株価比較 + 投資家心理指標", layout="wide")
+
+st.set_page_config(page_title="株価比較 ＋ 投資家心理指標", layout="wide")
 
 api_key = st.secrets["FMP_API_KEY"]
 
@@ -14,9 +15,8 @@ if not st.session_state.auth:
     st.title("🔒 Private Access")
     pwd = st.text_input("Password", type="password")
     if pwd == APP_PASSWORD:
-	    if not st.session_state.auth:
-	        st.session_state.auth = True
-	        st.experimental_rerun()   # ← rerunより安定
+        st.session_state.auth = True
+        st.rerun()
     else:
         st.stop()
 
@@ -31,13 +31,13 @@ from datetime import datetime, timedelta
 
 
 # ==============================
-# 💾 DB 設定(market_cache.db に保存)
+# 💾 DB 設定（market_cache.db に保存）
 # ==============================
 DB_PATH = "market_cache.db"
 STOCKS_CACHE_FILE = "stocks_cache.json"
 
 def fetch_all_stocks():
-    """yfinance から上場銘柄リストを取得(初回のみ)"""
+    """yfinance から上場銘柄リストを取得（初回のみ）"""
     # 日本株 と 米国大型株を取得
     default_stocks = {
         # 日本 - 主要銘柄
@@ -92,7 +92,7 @@ def fetch_all_stocks():
     return default_stocks
 
 def load_stocks_from_cache():
-    """JSONキャッシュから銘柄データを読み込む(なければ作成)"""
+    """JSONキャッシュから銘柄データを読み込む（なければ作成）"""
     if os.path.exists(STOCKS_CACHE_FILE):
         try:
             with open(STOCKS_CACHE_FILE, 'r', encoding='utf-8') as f:
@@ -110,7 +110,7 @@ def load_stocks_from_cache():
     return stocks
 
 def init_db():
-    """DB とテーブルを作る(なければ)"""
+    """DB とテーブルを作る（なければ）"""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""
@@ -192,7 +192,7 @@ def load_prices_from_db(ticker: str, start_date: str) -> pd.DataFrame:
     return df
 
 def update_price_if_needed(ticker: str, period: str = "1y") -> pd.DataFrame:
-    """yfinance取得+DB更新"""
+    """yfinance取得＋DB更新"""
     init_db()
     today = datetime.today().date()
     if period == "max":
@@ -220,13 +220,12 @@ def update_price_if_needed(ticker: str, period: str = "1y") -> pd.DataFrame:
     else:
         return local
 
-@st.cache_data(ttl=86400)   # 24時間ローカルDBのみ使用
 def load_price_cached(ticker: str, period: str = "1y") -> pd.DataFrame:
     return update_price_if_needed(ticker, period)
 
 @st.cache_data
 def get_company_name(ticker: str) -> str:
-    """会社名を取得(キャッシュ対応)"""
+    """会社名を取得（キャッシュ対応）"""
     try:
         info = yf.Ticker(ticker).info
         name = info.get('longName') or info.get('shortName') or ticker
@@ -248,7 +247,7 @@ SECTOR_ETF_MAP = {
     'Basic Materials': 'XLB',
     'Unknown': None
 }
-# 日本株 TOPIX-17 業種別ETF(業界トレンド用)
+# 日本株 TOPIX-17 業種別ETF（業界トレンド用）
 TOPIX17_ETF_MAP = {
     "Energy": "1618",            # エネルギー資源
     "Materials": "1617",         # 素材・化学
@@ -264,7 +263,7 @@ TOPIX17_ETF_MAP = {
 
 @st.cache_data
 def get_sector_avg_per() -> dict:
-    """セクターETFのPERから業界別平均PERを取得(キャッシュ対応)"""
+    """セクターETFのPERから業界別平均PERを取得（キャッシュ対応）"""
     sector_avg = {}
     for sector, etf in SECTOR_ETF_MAP.items():
         if etf is None:
@@ -289,7 +288,7 @@ def get_financial_metrics(ticker: str) -> dict:
     pbr = None
     sector = "Unknown"
 
-    # --- 1 yfinance で取得 ---
+    # --- ① yfinance で取得 ---
     try:
         info = yf.Ticker(ticker).info
         price_yf = info.get("regularMarketPrice")
@@ -304,10 +303,10 @@ def get_financial_metrics(ticker: str) -> dict:
     except Exception:
         pass
 
-    # --- 2 FMP フォールバック(yfinance が壊れていた場合のみ) ---
+    # --- ② FMP フォールバック（yfinance が壊れていた場合のみ） ---
     if per is None:
         try:
-            # secrets から APIキーを取得(公開アプリでも安全)
+            # secrets から APIキーを取得（公開アプリでも安全）
             api_key = st.secrets["FMP_API_KEY"]
 
             # 日本株は .T を付ける
@@ -347,18 +346,18 @@ def get_financial_metrics(ticker: str) -> dict:
 
 
 def search_tickers(query: str) -> dict:
-    """会社名またはティッカーから検索(複数キーワード対応)"""
+    """会社名またはティッカーから検索（複数キーワード対応）"""
     query_lower = query.lower().strip()
     if not query_lower:
         return {}
     
     results = {}
-    init_db()  # DB初期化(データがなければ投入)
+    init_db()  # DB初期化（データがなければ投入）
     
     # ローカルデータベースから検索
     try:
         conn = sqlite3.connect(DB_PATH)
-        # ティッカー完全一致(優先度高)
+        # ティッカー完全一致（優先度高）
         df_exact = pd.read_sql_query("""
             SELECT ticker, name FROM ticker_cache 
             WHERE LOWER(ticker) = ?
@@ -367,7 +366,7 @@ def search_tickers(query: str) -> dict:
         for _, row in df_exact.iterrows():
             results[row['ticker']] = row['name']
         
-        # 部分一致(ティッカーと名前)
+        # 部分一致（ティッカーと名前）
         df_partial = pd.read_sql_query("""
             SELECT ticker, name FROM ticker_cache 
             WHERE LOWER(ticker) LIKE ? OR LOWER(name) LIKE ?
@@ -381,7 +380,7 @@ def search_tickers(query: str) -> dict:
     except Exception:
         pass
     
-    # キャッシュに見つからない場合、yfinanceで直接検索(ティッカーのみ)
+    # キャッシュに見つからない場合、yfinanceで直接検索（ティッカーのみ）
     if not results and (len(query_lower) <= 6 and query_lower.isalnum()):
         try:
             # 日本株の場合は .T サフィックスを試す
@@ -428,7 +427,7 @@ def add_ticker_to_cache(ticker: str, name: str):
     return False
 
 def load_fear_greed_cached() -> pd.DataFrame:
-    """Fear & Greed Index 取得(キャッシュ対応)"""
+    """Fear & Greed Index 取得（キャッシュ対応）"""
     init_db()
     conn = sqlite3.connect(DB_PATH)
     df_local = pd.read_sql_query("SELECT date, value FROM fear_greed ORDER BY date", conn)
@@ -469,9 +468,9 @@ def load_fear_greed_cached() -> pd.DataFrame:
 # ============================
 # UI部分
 # ============================
-st.title("📈 株価比較 + 投資家心理指標")
+st.title("📈 株価比較 ＋ 投資家心理指標")
 
-# ==== 銘柄入力(会社名検索対応) ====
+# ==== 銘柄入力（会社名検索対応） ====
 st.subheader("銘柄を検索")
 
 if "selected_tickers" not in st.session_state:
@@ -489,7 +488,7 @@ if search_query and len(search_query) > 0:
         st.session_state.search_results = search_tickers(search_query)
     
     if st.session_state.search_results:
-        st.write("**検索結果:**")
+        st.write("**検索結果：**")
         for symbol, name in list(st.session_state.search_results.items())[:5]:
             col1, col2, col3 = st.columns([2.5, 1, 1])
             with col1:
@@ -509,7 +508,7 @@ if search_query and len(search_query) > 0:
 
 # 選択された銘柄を表示
 if st.session_state.selected_tickers:
-    st.write("**選択中の銘柄:**")
+    st.write("**選択中の銘柄：**")
     cols = st.columns(len(st.session_state.selected_tickers) + 1)
     for i, ticker in enumerate(st.session_state.selected_tickers):
         with cols[i]:
@@ -545,17 +544,17 @@ if end_ts < base_ts:
 sentiment_catalog = {
     "VIX指数": "^VIX",
     "VIX3M": "^VIX3M",
-    "VVIX(VIXのボラ)": "^VVIX",
+    "VVIX（VIXのボラ）": "^VVIX",
     "ドル指数 DXY": "DX-Y.NYB",
     "Fear & Greed Index": "FNG",
-    "信用スプレッド(HYG-TLT)": "CREDIT_SPREAD",
-    "ボラティリティ偏り(VIX/VVIX)": "VOL_BIAS",
+    "信用スプレッド（HYG-TLT）": "CREDIT_SPREAD",
+    "ボラティリティ偏り（VIX/VVIX）": "VOL_BIAS",
     "米10年債利回り": "^TNX"
 }
 
 sentiment_options = list(sentiment_catalog.keys())
 selected_sentiments = st.multiselect(
-    "💡 心理指標を選択してください(第二軸に表示)",
+    "💡 心理指標を選択してください（第二軸に表示）",
     sentiment_options,
     default=["VIX指数"]
 )
@@ -612,15 +611,15 @@ for name in selected_sentiments:
     
     sentiment_data[name] = df
 
-# ==== 日本株業界トレンド(TOPIX-17)チェックボックス ====
-show_topix17 = st.checkbox("📊 日本株の業界トレンド(TOPIX-17 ETF)を表示する", value=False)
+# ==== 日本株業界トレンド（TOPIX-17）チェックボックス ====
+show_topix17 = st.checkbox("📊 日本株の業界トレンド（TOPIX-17 ETF）を表示する", value=False)
 # ==== グラフ生成 ====
 if not etf_data and not sentiment_data:
     st.error("❌ データが見つかりませんでした。別の銘柄でお試しください。")
 else:
     fig = go.Figure()
 
-    # 第一軸:株価(相対価格)
+    # 第一軸：株価（相対価格）
     for code, df in etf_data.items():
         display_name = company_names.get(code, code)
         fig.add_trace(go.Scatter(
@@ -632,8 +631,8 @@ else:
             hovertemplate="%{x|%Y-%m-%d}<br>" + display_name + ": %{y:.2f}x<extra></extra>"
         ))
 
-    # ==== 日本株 TOPIX-17 業界トレンド(補助線) ====
-    if show_topix17 and len(etf_data) > 0:
+    # ==== 日本株 TOPIX-17 業界トレンド（補助線） ====
+    if show_topix17:
         for sector_name, etf_code in TOPIX17_ETF_MAP.items():
             ticker = f"{etf_code}.T"
             df_topix = load_price_cached(ticker, period)
@@ -657,15 +656,15 @@ else:
                 hovertemplate="%{x|%Y-%m-%d}<br>" + f"{sector_name}: %{y:.2f}x<extra></extra>"
             ))
 
-    # 第二軸:心理指標
+    # 第二軸：心理指標
     sentiment_colors = {
         "VIX指数": "#FF6B6B",
         "VIX3M": "#FF8C42",
-        "VVIX(VIXのボラ)": "#FFA500",
+        "VVIX（VIXのボラ）": "#FFA500",
         "ドル指数 DXY": "#4ECDC4",
         "Fear & Greed Index": "#95E1D3",
-        "信用スプレッド(HYG-TLT)": "#A8D8EA",
-        "ボラティリティ偏り(VIX/VVIX)": "#AA96DA",
+        "信用スプレッド（HYG-TLT）": "#A8D8EA",
+        "ボラティリティ偏り（VIX/VVIX）": "#AA96DA",
         "米10年債利回り": "#A0DE82"
     }
 
@@ -703,12 +702,12 @@ else:
 
     # ==== レイアウト設定 ====
     fig.update_layout(
-        title=f"📊 株価相対比較 ({base_date:%Y-%m-%d} ~ {end_date:%Y-%m-%d}) + 投資家心理指標",
+        title=f"📊 株価相対比較 ({base_date:%Y-%m-%d} ~ {end_date:%Y-%m-%d}) ＋ 投資家心理指標",
         title_font_size=16,
         hovermode="x unified",
         height=600,
         yaxis=dict(
-            title="<b>株価比率(基準日=1.0)</b>",
+            title="<b>株価比率（基準日=1.0）</b>",
             title_font_size=11,
             gridcolor="#E8E8E8"
         ),
@@ -806,20 +805,20 @@ else:
 
     # セクターETF情報を表示
     st.markdown("---")
-    st.subheader("📊 セクター業界平均PER(ETFベース)")
+    st.subheader("📊 セクター業界平均PER（ETFベース）")
     st.caption("各セクターの業界平均PERは、以下のセクターETFのPERに基づいています")
 
     sector_etf_info = [
-        ("Technology", "XLK", "テクノロジー企業ETF(米国)"),
-        ("Healthcare", "XLV", "ヘルスケア企業ETF(米国)"),
-        ("Financials", "XLF", "金融企業ETF(米国)"),
-        ("Industrials", "XLI", "産業企業ETF(米国)"),
-        ("Energy", "XLE", "エネルギー企業ETF(米国)"),
-        ("Consumer Cyclical", "XLY", "消費財企業ETF(米国)"),
-        ("Consumer Defensive", "XLP", "生活必需品企業ETF(米国)"),
-        ("Real Estate", "XLRE", "不動産企業ETF(米国)"),
-        ("Utilities", "XLU", "公共事業企業ETF(米国)"),
-        ("Basic Materials", "XLB", "素材企業ETF(米国)"),
+        ("Technology", "XLK", "テクノロジー企業ETF（米国）"),
+        ("Healthcare", "XLV", "ヘルスケア企業ETF（米国）"),
+        ("Financials", "XLF", "金融企業ETF（米国）"),
+        ("Industrials", "XLI", "産業企業ETF（米国）"),
+        ("Energy", "XLE", "エネルギー企業ETF（米国）"),
+        ("Consumer Cyclical", "XLY", "消費財企業ETF（米国）"),
+        ("Consumer Defensive", "XLP", "生活必需品企業ETF（米国）"),
+        ("Real Estate", "XLRE", "不動産企業ETF（米国）"),
+        ("Utilities", "XLU", "公共事業企業ETF（米国）"),
+        ("Basic Materials", "XLB", "素材企業ETF（米国）"),
     ]
 
     sector_info_cols = st.columns(5)
@@ -832,7 +831,7 @@ else:
             else:
                 st.metric(sector, "N/A", help=f"{desc}\nETF: {etf}")
 
-    # 心理指標(最新値)
+    # 心理指標（最新値）
     st.markdown("---")
     st.subheader("💡 心理指標 (最新値)")
 
