@@ -1,4 +1,7 @@
 import streamlit as st
+
+st.set_page_config(page_title="株価比較 ＋ 投資家心理指標", layout="wide")
+
 api_key = st.secrets["FMP_API_KEY"]
 
 # Secrets からパスワードを取得
@@ -26,7 +29,6 @@ import json
 import os
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="株価比較 ＋ 投資家心理指標", layout="wide")
 
 # ==============================
 # 💾 DB 設定（market_cache.db に保存）
