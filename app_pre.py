@@ -668,7 +668,7 @@ else:
         "米10年債利回り": "#A0DE82"
     }
     
-    use_sentiment = st.checkbox("💡 投資家心理指標を表示する", value=True)
+    use_sentiment = st.checkbox("💡 投資家心理指標を表示する", value=False)
 
     if use_sentiment:
         selected_sentiments = st.multiselect(
