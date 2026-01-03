@@ -388,25 +388,25 @@ def search_tickers(query: str) -> dict:
     except Exception:
         pass
     
-    # キャッシュに見つからない場合、yfinanceで直接検索(ティッカーのみ)
-    if not results and (len(query_lower) <= 6 and query_lower.isalnum()):
-        try:
-            # 日本株の場合は .T サフィックスを試す
-            test_tickers = [query_lower]
-            if query_lower.isdigit():
-                test_tickers.append(f"{query_lower}.T")
-            
-            for test_ticker in test_tickers:
-                try:
-                    info = yf.Ticker(test_ticker).info
-                    if info and info.get('regularMarketPrice'):  # 有効なティッカー
-                        name = info.get('longName') or info.get('shortName') or test_ticker
-                        results[test_ticker] = name
-                        break
-                except Exception:
-                    pass
-        except Exception:
-            pass
+    # キャッシュに見つからない場合、yfinanceで直接検証(ETFも通す)
+    if not results and query_lower.replace(".", "").isalnum():
+        test_tickers = [query_lower.upper()]
+    
+        if query_lower.isdigit():
+            test_tickers.append(f"{query_lower}.T")
+    
+        for test_ticker in test_tickers:
+            try:
+                t = yf.Ticker(test_ticker)
+                hist = t.history(period="5d")
+    
+                # ★ ETF対応:価格履歴があれば「実在」と判定
+                if hist is not None and not hist.empty:
+                    name = t.info.get("longName") or t.info.get("shortName") or test_ticker
+                    results[test_ticker] = name
+                    break
+            except:
+                pass
     
     return results
 
