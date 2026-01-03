@@ -249,15 +249,23 @@ SECTOR_ETF_MAP = {
 }
 # 日本株 TOPIX-17 業種別ETF(業界トレンド用)
 TOPIX17_ETF_MAP = {
-    "Energy": "1618",            # エネルギー資源
-    "Materials": "1617",         # 素材・化学
-    "Industrials": "1610",       # 電気機器
-    "Consumer Cyclical": "1612", # 自動車・輸送機
-    "Consumer Defensive": "1613",# 食品
-    "Healthcare": "1638",        # 医薬品
-    "Financials": "1615",        # 銀行
-    "Real Estate": "1633",       # 不動産
-    "Utilities": "1627",         # 電力・ガス
+    "食品TPX": "1617",            # 食品
+    "エネルギーTPX": "1618",         # エネルギー資源
+    "建設・資材TPX": "1619",       # 建設・資材
+    "素材・化学TPX": "1620",       # 素材・化学
+    "医薬品TPX": "1621",# 医薬品
+    "自動車・輸送機TPX": "1622",        # 自動車・輸送機
+    "鉄鋼・非鉄TPX": "1623",        # 鉄鋼・非鉄
+    "機械TPX": "1624",       # 機械
+    "電機・精密TPX": "1625",         # 電機・精密
+    "情報通信・サービスその他TPX": "1626", # 情報通信・サービスその他
+    "電力・ガスTPX": "1627", # 
+    "運輸・物流TPX": "1628", # 運輸・物流
+    "商社・卸売TPX": "1629", # 商社・卸売
+    "小売TPX": "1630", # 小売
+    "銀行TPX": "1631", # 銀行
+    "金融TPX": "1632", # 金融
+    "不動産TPX": "1633", # 不動産
 }
 
 
@@ -668,7 +676,7 @@ else:
         "米10年債利回り": "#A0DE82"
     }
     
-    use_sentiment = st.checkbox("💡 投資家心理指標を表示する", value=False)
+    use_sentiment = st.checkbox("💡 投資家心理指標を表示する", value=True)
 
     if use_sentiment:
         selected_sentiments = st.multiselect(
