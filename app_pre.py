@@ -19,6 +19,10 @@ if not st.session_state.auth:
     else:
         st.stop()
 
+import google.generativeai as genai
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+
 import yfinance as yf
 import pandas as pd
 import requests
@@ -352,12 +356,29 @@ def get_financial_metrics(ticker: str) -> dict:
     }
 
 
+def llm_expand_query(text: str) -> list[str]:
+    prompt = (
+        "Convert this investment search intent into 5–10 English keywords.\n"
+        "Do NOT output any tickers.\n"
+        "Only output keywords, comma separated.\n\n"
+        f"Query: {text}"
+    )
+    try:
+        res = gemini_model.generate_content(prompt)
+        return [k.strip().lower() for k in res.text.split(",") if k.strip()]
+    except Exception:
+        return []
+
 
 def search_tickers(query: str) -> dict:
     """会社名またはティッカーから検索(複数キーワード対応)"""
     query_lower = query.lower().strip()
     if not query_lower:
         return {}
+        
+    # 🔥 ここでLLM展開
+    llm_keys = llm_expand_query(query_lower)
+    search_words = [query_lower] + llm_keys
     
     results = {}
     init_db()  # DB初期化(データがなければ投入)
@@ -375,11 +396,15 @@ def search_tickers(query: str) -> dict:
             results[row['ticker']] = row['name']
         
         # 部分一致(ティッカーと名前)
-        df_partial = pd.read_sql_query("""
-            SELECT ticker, name FROM ticker_cache 
-            WHERE LOWER(ticker) LIKE ? OR LOWER(name) LIKE ?
-            LIMIT 15
-        """, conn, params=(f"%{query_lower}%", f"%{query_lower}%"))
+        dfs = []
+        for word in search_words:
+            dfs.append(pd.read_sql_query("""
+                SELECT ticker, name FROM ticker_cache 
+                WHERE LOWER(ticker) LIKE ? OR LOWER(name) LIKE ?
+                LIMIT 15
+            """, conn, params=(f"%{word}%", f"%{word}%")))
+        
+        df_partial = pd.concat(dfs).drop_duplicates()
         conn.close()
         
         for _, row in df_partial.iterrows():
