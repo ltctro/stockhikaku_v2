@@ -421,28 +421,29 @@ def search_tickers(query: str, top_n: int = 10) -> dict:
         except Exception:
             pass
 
-    # ==== 3. LLM補完 (Geminiなど) ====
+    # ==== 3. LLM補完 (Gemini 1.5) ====
     if not results:
-        
-        # ここを有効にするとAIに会社名→ティッカー候補を聞けます
-        import google.generativeai as genai
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-
-        prompt = f"日本株・米国株の会社名 '{query}' に対応する上場ティッカーシンボルを3つまで教えてください。"
-        response = genai.chat.create(
-            model="chat-bison-001",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        text = response.last['content'][0]['text']
-        # ここで 'AAPL: Apple, MSFT: Microsoft' のような形式で返ってくる想定
-        for item in text.split(','):
-            parts = item.strip().split(':')
-            if len(parts) == 2:
-                ticker = parts[0].strip()
-                name = parts[1].strip()
-                results[ticker] = name
-                add_ticker_to_cache(ticker, name)
-        
+        try:
+            prompt = (
+                f"日本株・米国株の会社名「{query}」に対応する "
+                "上場ティッカーと正式社名を最大3件、"
+                "次の形式でのみ出力してください:\n"
+                "TICKER:NAME,TICKER:NAME\n"
+                "例) 7203:トヨタ,AAPL:Apple"
+            )
+    
+            res = gemini_model.generate_content(prompt)
+            text = res.text.strip()
+    
+            for item in text.split(","):
+                if ":" in item:
+                    t, n = item.split(":", 1)
+                    t, n = t.strip(), n.strip()
+                    if t and n:
+                        results[t] = n
+                        add_ticker_to_cache(t, n)
+        except Exception:
+            pass       
 
     return results
     
