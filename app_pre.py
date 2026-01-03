@@ -32,6 +32,7 @@ import json
 import os
 from datetime import datetime, timedelta
 
+from rapidfuzz import fuzz, process
 
 # ==============================
 # 💾 DB 設定(market_cache.db に保存)
@@ -370,70 +371,81 @@ def llm_expand_query(text: str) -> list[str]:
         return []
 
 
-def search_tickers(query: str) -> dict:
-    """会社名またはティッカーから検索(複数キーワード対応)"""
+
+
+def search_tickers(query: str, top_n: int = 10) -> dict:
+    """
+    会社名またはティッカー検索(部分一致 → あいまい検索 → AI補完)
+    """
     query_lower = query.lower().strip()
     if not query_lower:
         return {}
-        
-    # 🔥 ここでLLM展開
-    llm_keys = llm_expand_query(query_lower)
-    search_words = [query_lower] + llm_keys
-    
+
     results = {}
-    init_db()  # DB初期化(データがなければ投入)
-    
-    # ローカルデータベースから検索
+    init_db()
+
+    # ==== 1. DBで部分一致検索 ====
     try:
         conn = sqlite3.connect(DB_PATH)
-        # ティッカー完全一致(優先度高)
-        df_exact = pd.read_sql_query("""
-            SELECT ticker, name FROM ticker_cache 
-            WHERE LOWER(ticker) = ?
-        """, conn, params=(query_lower,))
-        
-        for _, row in df_exact.iterrows():
-            results[row['ticker']] = row['name']
-        
-        # 部分一致(ティッカーと名前)
-        dfs = []
-        for word in search_words:
-            dfs.append(pd.read_sql_query("""
-                SELECT ticker, name FROM ticker_cache 
-                WHERE LOWER(ticker) LIKE ? OR LOWER(name) LIKE ?
-                LIMIT 15
-            """, conn, params=(f"%{word}%", f"%{word}%")))
-        
-        df_partial = pd.concat(dfs).drop_duplicates()
+        df_partial = pd.read_sql_query("""
+            SELECT ticker, name FROM ticker_cache
+            WHERE LOWER(ticker) LIKE ? OR LOWER(name) LIKE ?
+        """, conn, params=(f"%{query_lower}%", f"%{query_lower}%"))
         conn.close()
-        
+
         for _, row in df_partial.iterrows():
-            if row['ticker'] not in results:  # 重複除去
-                results[row['ticker']] = row['name']
+            results[row['ticker']] = row['name']
+
     except Exception:
         pass
-    
-    # キャッシュに見つからない場合、yfinanceで直接検証(ETFも通す)
-    if not results and query_lower.replace(".", "").isalnum():
-        test_tickers = [query_lower.upper()]
-    
-        if query_lower.isdigit():
-            test_tickers.append(f"{query_lower}.T")
-    
-        for test_ticker in test_tickers:
-            try:
-                t = yf.Ticker(test_ticker)
-                hist = t.history(period="5d")
-    
-                # ★ ETF対応:価格履歴があれば「実在」と判定
-                if hist is not None and not hist.empty:
-                    name = t.info.get("longName") or t.info.get("shortName") or test_ticker
-                    results[test_ticker] = name
-                    break
-            except:
-                pass
-    
+
+    # ==== 2. rapidfuzzであいまい検索 ====
+    if not results:
+        try:
+            stocks = load_stocks_from_cache()
+            names = list(stocks.values())
+            tickers = list(stocks.keys())
+
+            matches = process.extract(
+                query_lower,
+                names,
+                scorer=fuzz.WRatio,
+                limit=top_n
+            )
+
+            for match_name, score, idx in matches:
+                if score >= 70:  # 類似度70%以上
+                    ticker = tickers[idx]
+                    results[ticker] = stocks[ticker]
+
+        except Exception:
+            pass
+
+    # ==== 3. LLM補完 (Geminiなど) ====
+    if not results:
+        
+        # ここを有効にするとAIに会社名→ティッカー候補を聞けます
+        import google.generativeai as genai
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+
+        prompt = f"日本株・米国株の会社名 '{query}' に対応する上場ティッカーシンボルを3つまで教えてください。"
+        response = genai.chat.create(
+            model="chat-bison-001",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = response.last['content'][0]['text']
+        # ここで 'AAPL: Apple, MSFT: Microsoft' のような形式で返ってくる想定
+        for item in text.split(','):
+            parts = item.strip().split(':')
+            if len(parts) == 2:
+                ticker = parts[0].strip()
+                name = parts[1].strip()
+                results[ticker] = name
+                add_ticker_to_cache(ticker, name)
+        
+
     return results
+    
 
 def add_ticker_to_cache(ticker: str, name: str):
     """ティッカーをJSONキャッシュに追加"""
