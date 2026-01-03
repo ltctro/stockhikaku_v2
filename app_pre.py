@@ -356,19 +356,24 @@ def get_financial_metrics(ticker: str) -> dict:
     }
 
 
-def llm_expand_query(text: str) -> list[str]:
+def llm_guess_company(text: str) -> dict:
     prompt = (
-        "User typed a Japanese company name or product name.\n"
-        "Return 5–10 possible official company names and abbreviations "
-        "in Japanese and English.\n"
-        "Return ONLY comma separated words.\n\n"
-        f"Input: {text}"
+        "You are a stock ticker finder.\n"
+        "Return up to 3 Japanese or US listed companies that best match this word.\n"
+        "Format ONLY as:\n"
+        "TICKER:NAME,TICKER:NAME\n\n"
+        f"Word: {text}"
     )
     try:
         res = gemini_model.generate_content(prompt)
-        return [k.strip().lower() for k in res.text.split(",") if k.strip()]
+        out = {}
+        for item in res.text.split(","):
+            if ":" in item:
+                t,n = item.split(":",1)
+                out[t.strip()] = n.strip()
+        return out
     except:
-        return []
+        return {}
 
 
 def search_tickers(query: str) -> dict:
@@ -377,9 +382,8 @@ def search_tickers(query: str) -> dict:
     if not query_lower:
         return {}
         
-    # 🔥 ここでLLM展開
-    llm_keys = llm_expand_query(query_lower)
-    search_words = [query_lower] + llm_keys
+    # 1 ローカルDB検索のみ
+    search_words = [query_lower]
     
     results = {}
     init_db()  # DB初期化(データがなければ投入)
@@ -414,25 +418,41 @@ def search_tickers(query: str) -> dict:
     except Exception:
         pass
     
-    # キャッシュに見つからない場合、yfinanceで直接検証(ETFも通す)
-    if not results and query_lower.replace(".", "").isalnum():
-        test_tickers = [query_lower.upper()]
+    # ==== 3 LLM フォールバック(検証付き)====
+    if not results:
+        guessed = llm_guess_company(query_lower)
     
-        if query_lower.isdigit():
-            test_tickers.append(f"{query_lower}.T")
+        for t, n in guessed.items():
+            clean = t.replace(".T","").upper()
     
-        for test_ticker in test_tickers:
             try:
-                t = yf.Ticker(test_ticker)
-                hist = t.history(period="5d")
-    
-                # ★ ETF対応:価格履歴があれば「実在」と判定
+                yf_test = yf.Ticker(f"{clean}.T" if clean.isdigit() else clean)
+                hist = yf_test.history(period="5d")
                 if hist is not None and not hist.empty:
-                    name = t.info.get("longName") or t.info.get("shortName") or test_ticker
-                    results[test_ticker] = name
-                    break
+                    results[clean] = n
+                    add_ticker_to_cache(clean, n)
+                    break   # ← 実在1件だけ採用
             except:
                 pass
+    
+    # ==== 4. yfinance 実在検証(必ず走る)====
+    test_tickers = []
+    
+    if query_lower.isdigit():
+        test_tickers.append(f"{query_lower}.T")
+    elif query_lower.isascii() and query_lower.replace(".", "").isalnum():
+        test_tickers.append(query_lower.upper())
+    
+    for test_ticker in test_tickers:
+        try:
+            t = yf.Ticker(test_ticker)
+            hist = t.history(period="5d")
+            if hist is not None and not hist.empty:
+                name = t.info.get("longName") or t.info.get("shortName") or test_ticker
+                results[test_ticker.replace(".T","")] = name
+                break
+        except:
+            pass
     
     return results
 
