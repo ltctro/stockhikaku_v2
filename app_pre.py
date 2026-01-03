@@ -32,7 +32,6 @@ import json
 import os
 from datetime import datetime, timedelta
 
-from rapidfuzz import fuzz, process
 
 # ==============================
 # 💾 DB 設定(market_cache.db に保存)
@@ -359,94 +358,83 @@ def get_financial_metrics(ticker: str) -> dict:
 
 def llm_expand_query(text: str) -> list[str]:
     prompt = (
-        "Convert this investment search intent into 5–10 English keywords.\n"
-        "Do NOT output any tickers.\n"
-        "Only output keywords, comma separated.\n\n"
-        f"Query: {text}"
+        "User typed a Japanese company name or product name.\n"
+        "Return 5–10 possible official company names and abbreviations "
+        "in Japanese and English.\n"
+        "Return ONLY comma separated words.\n\n"
+        f"Input: {text}"
     )
     try:
         res = gemini_model.generate_content(prompt)
         return [k.strip().lower() for k in res.text.split(",") if k.strip()]
-    except Exception:
+    except:
         return []
 
 
-
-
-def search_tickers(query: str, top_n: int = 10) -> dict:
-    """
-    会社名またはティッカー検索(部分一致 → あいまい検索 → AI補完)
-    """
+def search_tickers(query: str) -> dict:
+    """会社名またはティッカーから検索(複数キーワード対応)"""
     query_lower = query.lower().strip()
     if not query_lower:
         return {}
-
+        
+    # 🔥 ここでLLM展開
+    llm_keys = llm_expand_query(query_lower)
+    search_words = [query_lower] + llm_keys
+    
     results = {}
-    init_db()
-
-    # ==== 1. DBで部分一致検索 ====
+    init_db()  # DB初期化(データがなければ投入)
+    
+    # ローカルデータベースから検索
     try:
         conn = sqlite3.connect(DB_PATH)
-        df_partial = pd.read_sql_query("""
-            SELECT ticker, name FROM ticker_cache
-            WHERE LOWER(ticker) LIKE ? OR LOWER(name) LIKE ?
-        """, conn, params=(f"%{query_lower}%", f"%{query_lower}%"))
-        conn.close()
-
-        for _, row in df_partial.iterrows():
+        # ティッカー完全一致(優先度高)
+        df_exact = pd.read_sql_query("""
+            SELECT ticker, name FROM ticker_cache 
+            WHERE LOWER(ticker) = ?
+        """, conn, params=(query_lower,))
+        
+        for _, row in df_exact.iterrows():
             results[row['ticker']] = row['name']
-
+        
+        # 部分一致(ティッカーと名前)
+        dfs = []
+        for word in search_words:
+            dfs.append(pd.read_sql_query("""
+                SELECT ticker, name FROM ticker_cache 
+                WHERE LOWER(ticker) LIKE ? OR LOWER(name) LIKE ?
+                LIMIT 15
+            """, conn, params=(f"%{word}%", f"%{word}%")))
+        
+        df_partial = pd.concat(dfs).drop_duplicates()
+        conn.close()
+        
+        for _, row in df_partial.iterrows():
+            if row['ticker'] not in results:  # 重複除去
+                results[row['ticker']] = row['name']
     except Exception:
         pass
-
-    # ==== 2. rapidfuzzであいまい検索 ====
-    if not results:
-        try:
-            stocks = load_stocks_from_cache()
-            names = list(stocks.values())
-            tickers = list(stocks.keys())
-
-            matches = process.extract(
-                query_lower,
-                names,
-                scorer=fuzz.WRatio,
-                limit=top_n
-            )
-
-            for match_name, score, idx in matches:
-                if score >= 70:  # 類似度70%以上
-                    ticker = tickers[idx]
-                    results[ticker] = stocks[ticker]
-
-        except Exception:
-            pass
-
-    # ==== 3. LLM補完 (Gemini 1.5) ====
-    if not results:
-        try:
-            prompt = (
-                f"日本株・米国株の会社名「{query}」に対応する "
-                "上場ティッカーと正式社名を最大3件、"
-                "次の形式でのみ出力してください:\n"
-                "TICKER:NAME,TICKER:NAME\n"
-                "例) 7203:トヨタ,AAPL:Apple"
-            )
     
-            res = gemini_model.generate_content(prompt)
-            text = res.text.strip()
+    # キャッシュに見つからない場合、yfinanceで直接検証(ETFも通す)
+    if not results and query_lower.replace(".", "").isalnum():
+        test_tickers = [query_lower.upper()]
     
-            for item in text.split(","):
-                if ":" in item:
-                    t, n = item.split(":", 1)
-                    t, n = t.strip(), n.strip()
-                    if t and n:
-                        results[t] = n
-                        add_ticker_to_cache(t, n)
-        except Exception:
-            pass       
-
+        if query_lower.isdigit():
+            test_tickers.append(f"{query_lower}.T")
+    
+        for test_ticker in test_tickers:
+            try:
+                t = yf.Ticker(test_ticker)
+                hist = t.history(period="5d")
+    
+                # ★ ETF対応:価格履歴があれば「実在」と判定
+                if hist is not None and not hist.empty:
+                    name = t.info.get("longName") or t.info.get("shortName") or test_ticker
+                    results[test_ticker] = name
+                    break
+            except:
+                pass
+    
     return results
-    
 
 def add_ticker_to_cache(ticker: str, name: str):
     """ティッカーをJSONキャッシュに追加"""
